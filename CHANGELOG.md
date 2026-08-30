@@ -33,6 +33,11 @@ versionnage [SemVer](https://semver.org/lang/fr/).
 
 ### Corrigé
 
+- La réorganisation des pages ne répondait pas : sous Windows, le glisser-
+  déposer HTML5 n'est disponible qu'en désactivant `dragDropEnabled`, ce qui
+  aurait coûté le dépôt de fichiers depuis l'Explorateur. Le glissement repose
+  désormais sur les Pointer Events, qui conservent les deux et fonctionnent
+  aussi au stylet.
 - La rotation de pages échouait sur « missing field `quarter_turns` » :
   l'annotation `rename_all` de serde ne porte que sur les noms de variantes,
   pas sur leurs champs, qui restaient donc en snake_case face au camelCase du

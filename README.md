@@ -96,6 +96,11 @@ Un test sans sa variable d'environnement s'ignore de lui-même.
 > Vite déjà lancé sert des dépendances pré-bundlées périmées et la fenêtre reste
 > blanche.
 
+> Le glisser-déposer HTML5 ne fonctionne pas sous Windows tant que
+> `dragDropEnabled` est actif dans `tauri.conf.json` — et le désactiver
+> supprimerait le dépôt de fichiers depuis l'Explorateur. Tout glissement
+> interne (réorganisation des vignettes) passe donc par les Pointer Events.
+
 ## Feuille de route
 
 1. **Annotation, suite** — sélection et déplacement de traits existants, relecture
