@@ -1,0 +1,52 @@
+export interface PageInfo {
+  /** Largeur en points PDF (1/72 pouce). */
+  width: number;
+  height: number;
+}
+
+export interface DocInfo {
+  id: number;
+  path: string;
+  title: string;
+  pageCount: number;
+  pages: PageInfo[];
+}
+
+export type InkTool = "pen" | "highlighter" | "eraser" | "text";
+
+export interface TextNote {
+  id: string;
+  /** Coin haut-gauche en points PDF. */
+  x: number;
+  y: number;
+  width: number;
+  text: string;
+  fontSize: number;
+  color: string;
+}
+
+export interface PageImageInfo {
+  /** « 3 », ou « 1.13 » pour une image imbriquée dans un Form XObject. */
+  objectPath: string;
+  /** Coin haut-gauche en points PDF. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface InkStroke {
+  id: string;
+  tool: "pen" | "highlighter";
+  color: string;
+  /** Épaisseur de base en points PDF. */
+  width: number;
+  /** Points [x, y, pression 0..1] en points PDF, origine en haut à gauche. */
+  points: [number, number, number][];
+}
+
+/** Traits non enregistrés d'un document, par index de page. */
+export type DocInk = Record<number, InkStroke[]>;
+
+/** Notes de texte non enregistrées, par index de page. */
+export type DocNotes = Record<number, TextNote[]>;

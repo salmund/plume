@@ -1,0 +1,41 @@
+{
+  "name": "plume",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Lecteur et éditeur de documents PDF, rapide et sans friction",
+  "author": "Louis Dumontier (@salmund)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/salmund/plume.git"
+  },
+  "type": "module",
+  "scripts": {
+    "setup": "node scripts/fetch-pdfium.mjs",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "icon": "node scripts/make-icon.mjs && tauri icon",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@fontsource/instrument-serif": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-opener": "^2",
+    "lucide-react": "^1.37.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4"
+  }
+}
