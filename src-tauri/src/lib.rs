@@ -3,7 +3,8 @@ mod pdf_engine;
 use std::sync::Mutex;
 
 use pdf_engine::{
-    BookmarkNode, DocInfo, PageAnnotsIn, PageImageInfo, PdfRequest, SearchHit, TextSegment,
+    BookmarkNode, DocInfo, PageAnnotsIn, PageImageInfo, PageOp, PdfRequest, SearchHit,
+    TextSegment,
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -52,12 +53,14 @@ fn close_document(state: State<'_, Engine>, doc_id: u32) -> Result<(), String> {
     engine_send(&state, PdfRequest::Close { doc_id })
 }
 
-/// Écrit les annotations (encre + notes de texte) dans le PDF et remplace le fichier.
+/// Écrit les annotations et les modifications de structure dans le PDF.
+/// Sans `dest_path`, le fichier d'origine est remplacé.
 #[tauri::command]
 async fn save_document(
     state: State<'_, Engine>,
     doc_id: u32,
     annots: Vec<PageAnnotsIn>,
+    dest_path: Option<String>,
 ) -> Result<DocInfo, String> {
     let (reply, rx) = tokio::sync::oneshot::channel();
     engine_send(
@@ -65,6 +68,64 @@ async fn save_document(
         PdfRequest::Save {
             doc_id,
             annots,
+            dest_path,
+            reply,
+        },
+    )?;
+    rx.await.map_err(|_| "Moteur PDF interrompu".to_string())?
+}
+
+/// Applique une opération de structure (rotation, suppression, déplacement,
+/// fusion) au document en mémoire.
+#[tauri::command]
+async fn edit_pages(
+    state: State<'_, Engine>,
+    doc_id: u32,
+    op: PageOp,
+) -> Result<DocInfo, String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    engine_send(&state, PdfRequest::EditPages { doc_id, op, reply })?;
+    rx.await.map_err(|_| "Moteur PDF interrompu".to_string())?
+}
+
+/// Écrit une sélection de pages dans un nouveau PDF.
+#[tauri::command]
+async fn extract_pages(
+    state: State<'_, Engine>,
+    doc_id: u32,
+    pages: Vec<u16>,
+    dest_path: String,
+) -> Result<(), String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    engine_send(
+        &state,
+        PdfRequest::ExtractPages {
+            doc_id,
+            pages,
+            dest_path,
+            reply,
+        },
+    )?;
+    rx.await.map_err(|_| "Moteur PDF interrompu".to_string())?
+}
+
+/// Écrit une page en PNG à la résolution demandée.
+#[tauri::command]
+async fn export_page_image(
+    state: State<'_, Engine>,
+    doc_id: u32,
+    page_index: u16,
+    dpi: u32,
+    dest_path: String,
+) -> Result<(), String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    engine_send(
+        &state,
+        PdfRequest::ExportPageImage {
+            doc_id,
+            page_index,
+            dpi,
+            dest_path,
             reply,
         },
     )?;
@@ -232,6 +293,9 @@ pub fn run() {
             render_page,
             close_document,
             save_document,
+            edit_pages,
+            extract_pages,
+            export_page_image,
             page_text,
             search_document,
             list_bookmarks,

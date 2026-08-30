@@ -12,6 +12,7 @@ import type {
   DocNotes,
   InkStroke,
   InkTool,
+  PageOp,
   SearchHit,
   TextNote,
   UserMark,
@@ -60,6 +61,12 @@ interface Props {
   notes: DocNotes;
   dirty: boolean;
   saving: boolean;
+  /** Une opération de structure est en cours. */
+  busy: boolean;
+  onEditPages: (op: PageOp) => void;
+  onExtract: (pages: number[]) => void;
+  onMerge: (at: number) => void;
+  onExportImage: (pageIndex: number) => void;
   canUndo: boolean;
   canRedo: boolean;
   onOpen: () => void;
@@ -81,6 +88,11 @@ export function Viewer({
   notes,
   dirty,
   saving,
+  busy,
+  onEditPages,
+  onExtract,
+  onMerge,
+  onExportImage,
   canUndo,
   canRedo,
   onOpen,
@@ -114,6 +126,12 @@ export function Viewer({
     () => localStorage.getItem("plume.thumbs") === "1",
   );
   const [marks, setMarks] = useState<UserMark[]>(() => loadMarks(doc.path));
+  const [selection, setSelection] = useState<number[]>([]);
+
+  // Une page supprimée ne doit pas rester sélectionnée.
+  useEffect(() => {
+    setSelection((prev) => prev.filter((p) => p < doc.pageCount));
+  }, [doc.pageCount]);
 
   /* ---------- Recherche ---------- */
 
@@ -397,6 +415,8 @@ export function Viewer({
         e.preventDefault();
         applyZoom({ mode: "fit-width" });
       } else if (k === "s") {
+        // Ctrl+Maj+S (enregistrer sous) est géré par l'application.
+        if (e.shiftKey) return;
         e.preventDefault();
         onSave();
       } else if (k === "e") {
@@ -613,9 +633,22 @@ export function Viewer({
             rev={rev}
             current={currentPage}
             marks={marks}
+            selection={selection}
+            busy={busy}
             onJump={jumpTo}
             onAddMark={addMark}
             onRemoveMark={removeMark}
+            onSelectionChange={setSelection}
+            onReorder={(pages, dest) =>
+              onEditPages({ kind: "move", pages, dest })
+            }
+            onRotate={(quarterTurns) =>
+              onEditPages({ kind: "rotate", pages: selection, quarterTurns })
+            }
+            onDelete={() => onEditPages({ kind: "delete", pages: selection })}
+            onExtract={() => onExtract(selection)}
+            onMerge={() => onMerge(currentPage + 1)}
+            onExportImage={() => onExportImage(selection[0] ?? currentPage)}
           />
         )}
         {/* La barre de recherche est hors du conteneur défilant : sinon elle

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { DocInfo, UserMark } from "../types";
 import { BookmarkPanel } from "./BookmarkPanel";
+import { PageTools } from "./PageTools";
 import { ThumbnailList } from "./ThumbnailSidebar";
 
 export type SidebarTab = "thumbs" | "bookmarks";
@@ -10,9 +11,18 @@ interface Props {
   rev: number;
   current: number;
   marks: UserMark[];
+  selection: number[];
+  busy: boolean;
   onJump: (index: number) => void;
   onAddMark: () => void;
   onRemoveMark: (pageIndex: number) => void;
+  onSelectionChange: (pages: number[]) => void;
+  onReorder: (pages: number[], dest: number) => void;
+  onRotate: (quarterTurns: number) => void;
+  onDelete: () => void;
+  onExtract: () => void;
+  onMerge: () => void;
+  onExportImage: () => void;
 }
 
 export function Sidebar({
@@ -20,9 +30,18 @@ export function Sidebar({
   rev,
   current,
   marks,
+  selection,
+  busy,
   onJump,
   onAddMark,
   onRemoveMark,
+  onSelectionChange,
+  onReorder,
+  onRotate,
+  onDelete,
+  onExtract,
+  onMerge,
+  onExportImage,
 }: Props) {
   const [tab, setTab] = useState<SidebarTab>(() => {
     const saved = localStorage.getItem("plume.sidebarTab");
@@ -39,7 +58,7 @@ export function Sidebar({
   };
 
   return (
-    <div className="bg-pupitre border-trait flex w-[184px] shrink-0 flex-col border-r">
+    <div className="bg-pupitre border-trait flex w-[200px] shrink-0 flex-col border-r">
       <div className="border-trait flex shrink-0 border-b p-1.5">
         {(
           [
@@ -65,7 +84,15 @@ export function Sidebar({
 
       <div data-thumbs className="min-h-0 flex-1 overflow-y-auto">
         {tab === "thumbs" ? (
-          <ThumbnailList doc={doc} rev={rev} current={current} onJump={onJump} />
+          <ThumbnailList
+            doc={doc}
+            rev={rev}
+            current={current}
+            selection={selection}
+            onJump={onJump}
+            onSelectionChange={onSelectionChange}
+            onReorder={onReorder}
+          />
         ) : (
           <BookmarkPanel
             docId={doc.id}
@@ -78,6 +105,26 @@ export function Sidebar({
           />
         )}
       </div>
+
+      {tab === "thumbs" && (
+        <PageTools
+          selection={selection}
+          pageCount={doc.pageCount}
+          busy={busy}
+          onRotate={onRotate}
+          onDelete={onDelete}
+          onExtract={onExtract}
+          onMerge={onMerge}
+          onExportImage={onExportImage}
+          onSelectAll={() =>
+            onSelectionChange(
+              selection.length === doc.pageCount
+                ? []
+                : Array.from({ length: doc.pageCount }, (_, i) => i),
+            )
+          }
+        />
+      )}
     </div>
   );
 }

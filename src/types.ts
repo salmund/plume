@@ -25,6 +25,13 @@ export interface TextNote {
   color: string;
 }
 
+/** Opération de structure sur les pages du document. */
+export type PageOp =
+  | { kind: "rotate"; pages: number[]; quarterTurns: number }
+  | { kind: "delete"; pages: number[] }
+  | { kind: "move"; pages: number[]; dest: number }
+  | { kind: "merge"; paths: string[]; at: number };
+
 /** Fragment de texte positionné, en points PDF depuis le haut de la page. */
 export interface TextSegment {
   text: string;

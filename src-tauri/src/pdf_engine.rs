@@ -112,6 +112,30 @@ pub struct PageImageInfo {
     pub height: f32,
 }
 
+/// Une opération de structure sur les pages du document.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PageOp {
+    /// Quarts de tour horaires (négatif = antihoraire).
+    Rotate {
+        pages: Vec<u16>,
+        quarter_turns: i32,
+    },
+    Delete {
+        pages: Vec<u16>,
+    },
+    /// Déplace les pages données pour qu'elles commencent à `dest`.
+    Move {
+        pages: Vec<u16>,
+        dest: u16,
+    },
+    /// Insère les pages d'autres PDF à la position donnée.
+    Merge {
+        paths: Vec<String>,
+        at: u16,
+    },
+}
+
 pub enum PdfRequest {
     Open {
         path: String,
@@ -126,6 +150,8 @@ pub enum PdfRequest {
     Save {
         doc_id: u32,
         annots: Vec<PageAnnotsIn>,
+        /// Chemin de destination ; `None` remplace le fichier d'origine.
+        dest_path: Option<String>,
         reply: oneshot::Sender<Result<DocInfo, String>>,
     },
     PageText {
@@ -140,6 +166,26 @@ pub enum PdfRequest {
         /// Nombre maximal d'occurrences renvoyées.
         limit: usize,
         reply: oneshot::Sender<Result<Vec<SearchHit>, String>>,
+    },
+    EditPages {
+        doc_id: u32,
+        op: PageOp,
+        reply: oneshot::Sender<Result<DocInfo, String>>,
+    },
+    /// Écrit une sélection de pages dans un nouveau fichier.
+    ExtractPages {
+        doc_id: u32,
+        pages: Vec<u16>,
+        dest_path: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Écrit une page en PNG à la résolution demandée.
+    ExportPageImage {
+        doc_id: u32,
+        page_index: u16,
+        dpi: u32,
+        dest_path: String,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     ListBookmarks {
         doc_id: u32,
@@ -164,6 +210,9 @@ pub enum PdfRequest {
 struct OpenDoc {
     path: String,
     document: PdfDocument<'static>,
+    /// Le document en mémoire diffère du fichier (pages réorganisées,
+    /// pivotées, supprimées, fusionnées…).
+    dirty: bool,
 }
 
 pub fn spawn() -> Sender<PdfRequest> {
@@ -184,6 +233,15 @@ pub fn spawn() -> Sender<PdfRequest> {
                                 let _ = reply.send(Err(err.clone()));
                             }
                             PdfRequest::Save { reply, .. } => {
+                                let _ = reply.send(Err(err.clone()));
+                            }
+                            PdfRequest::EditPages { reply, .. } => {
+                                let _ = reply.send(Err(err.clone()));
+                            }
+                            PdfRequest::ExtractPages { reply, .. } => {
+                                let _ = reply.send(Err(err.clone()));
+                            }
+                            PdfRequest::ExportPageImage { reply, .. } => {
                                 let _ = reply.send(Err(err.clone()));
                             }
                             PdfRequest::PageText { reply, .. } => {
@@ -221,7 +279,14 @@ pub fn spawn() -> Sender<PdfRequest> {
                                 let id = next_id;
                                 next_id += 1;
                                 let info = doc_info_from(&document, id, &path);
-                                docs.insert(id, OpenDoc { path, document });
+                                docs.insert(
+                                    id,
+                                    OpenDoc {
+                                        path,
+                                        document,
+                                        dirty: false,
+                                    },
+                                );
                                 info
                             });
                         let _ = reply.send(result);
@@ -240,9 +305,43 @@ pub fn spawn() -> Sender<PdfRequest> {
                     PdfRequest::Save {
                         doc_id,
                         annots,
+                        dest_path,
                         reply,
                     } => {
-                        let result = save_with_annots(pdfium, &mut docs, doc_id, &annots);
+                        let result = save_with_annots(
+                            pdfium,
+                            &mut docs,
+                            doc_id,
+                            &annots,
+                            dest_path.as_deref(),
+                        );
+                        let _ = reply.send(result);
+                    }
+
+                    PdfRequest::EditPages { doc_id, op, reply } => {
+                        let result = edit_pages(pdfium, &mut docs, doc_id, op);
+                        let _ = reply.send(result);
+                    }
+
+                    PdfRequest::ExtractPages {
+                        doc_id,
+                        pages,
+                        dest_path,
+                        reply,
+                    } => {
+                        let result = extract_pages(pdfium, &docs, doc_id, &pages, &dest_path);
+                        let _ = reply.send(result);
+                    }
+
+                    PdfRequest::ExportPageImage {
+                        doc_id,
+                        page_index,
+                        dpi,
+                        dest_path,
+                        reply,
+                    } => {
+                        let result =
+                            export_page_image(&docs, doc_id, page_index, dpi, &dest_path);
                         let _ = reply.send(result);
                     }
 
@@ -361,8 +460,9 @@ fn save_with_annots(
     docs: &mut HashMap<u32, OpenDoc>,
     doc_id: u32,
     annots: &[PageAnnotsIn],
+    dest_path: Option<&str>,
 ) -> Result<DocInfo, String> {
-    let (path, bytes) = {
+    let (source_path, bytes) = {
         let open_doc = docs.get_mut(&doc_id).ok_or("Document inconnu".to_string())?;
         let font = open_doc.document.fonts_mut().helvetica();
 
@@ -396,19 +496,33 @@ fn save_with_annots(
         (open_doc.path.clone(), bytes)
     };
 
-    // Ferme le document (libère le fichier), puis remplace le fichier
-    // en passant par un fichier temporaire pour limiter les risques.
+    // Le document rouvert devient celui qu'on vient d'écrire : un
+    // « enregistrer sous » bascule l'onglet sur le nouveau fichier.
+    let path = dest_path.unwrap_or(&source_path).to_string();
+
+    // Ferme le document (libère le fichier), puis écrit en passant par un
+    // fichier temporaire pour ne pas laisser l'original tronqué en cas
+    // d'interruption.
     docs.remove(&doc_id);
     let tmp = format!("{path}.plume-tmp");
     std::fs::write(&tmp, &bytes).map_err(|e| format!("Écriture : {e}"))?;
-    std::fs::remove_file(&path).map_err(|e| format!("Remplacement : {e}"))?;
+    if std::path::Path::new(&path).exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("Remplacement : {e}"))?;
+    }
     std::fs::rename(&tmp, &path).map_err(|e| format!("Renommage : {e}"))?;
 
     let document = pdfium
         .load_pdf_from_file(&path, None)
         .map_err(|e| format!("Réouverture : {e}"))?;
     let info = doc_info_from(&document, doc_id, &path);
-    docs.insert(doc_id, OpenDoc { path, document });
+    docs.insert(
+        doc_id,
+        OpenDoc {
+            path,
+            document,
+            dirty: false,
+        },
+    );
     Ok(info)
 }
 
@@ -556,6 +670,221 @@ fn quad_bounds(q: &PdfQuadPoints) -> (f32, f32, f32, f32) {
     let min_y = ys.iter().cloned().fold(f32::MAX, f32::min);
     let max_y = ys.iter().cloned().fold(f32::MIN, f32::max);
     (min_x, min_y, max_x, max_y)
+}
+
+/// Reconstruit le document dans l'ordre de pages donné.
+///
+/// PDFium sait déplacer des pages en place (`FPDF_MovePages`), mais l'API sûre
+/// de `pdfium-render` n'expose pas le handle nécessaire. On passe donc par une
+/// sérialisation puis une recopie dans l'ordre voulu : le coût est celui d'un
+/// aller-retour mémoire, acceptable pour une action explicite de l'utilisateur.
+fn rebuild_with_order(
+    pdfium: &'static Pdfium,
+    open_doc: &mut OpenDoc,
+    order: &[u16],
+) -> Result<(), String> {
+    let bytes = open_doc
+        .document
+        .save_to_bytes()
+        .map_err(|e| format!("Sérialisation : {e:?}"))?;
+    let source = pdfium
+        .load_pdf_from_byte_vec(bytes, None)
+        .map_err(|e| format!("Relecture : {e}"))?;
+
+    let mut rebuilt = pdfium
+        .create_new_pdf()
+        .map_err(|e| format!("Création du document : {e}"))?;
+    let list = order
+        .iter()
+        .map(|p| (p + 1).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    rebuilt
+        .pages_mut()
+        .copy_pages_from_document(&source, &list, 0)
+        .map_err(|e| format!("Recopie des pages : {e}"))?;
+
+    open_doc.document = rebuilt;
+    Ok(())
+}
+
+/// Applique une opération de structure sur les pages, en mémoire.
+/// Le fichier n'est réécrit qu'à l'enregistrement.
+fn edit_pages(
+    pdfium: &'static Pdfium,
+    docs: &mut HashMap<u32, OpenDoc>,
+    doc_id: u32,
+    op: PageOp,
+) -> Result<DocInfo, String> {
+    let open_doc = docs.get_mut(&doc_id).ok_or("Document inconnu".to_string())?;
+    let page_count = open_doc.document.pages().len();
+
+    let check = |pages: &[u16]| -> Result<(), String> {
+        if pages.is_empty() {
+            return Err("Aucune page sélectionnée".to_string());
+        }
+        if pages.iter().any(|p| *p >= page_count) {
+            return Err("Page hors du document".to_string());
+        }
+        Ok(())
+    };
+
+    match op {
+        PageOp::Rotate {
+            pages,
+            quarter_turns,
+        } => {
+            check(&pages)?;
+            for index in pages {
+                let mut page = open_doc
+                    .document
+                    .pages()
+                    .get(index)
+                    .map_err(|e| format!("Page introuvable : {e}"))?;
+                let current = page.rotation().unwrap_or(PdfPageRenderRotation::None);
+                let quarters = match current {
+                    PdfPageRenderRotation::None => 0,
+                    PdfPageRenderRotation::Degrees90 => 1,
+                    PdfPageRenderRotation::Degrees180 => 2,
+                    PdfPageRenderRotation::Degrees270 => 3,
+                };
+                let next = (quarters + quarter_turns).rem_euclid(4);
+                page.set_rotation(match next {
+                    1 => PdfPageRenderRotation::Degrees90,
+                    2 => PdfPageRenderRotation::Degrees180,
+                    3 => PdfPageRenderRotation::Degrees270,
+                    _ => PdfPageRenderRotation::None,
+                });
+            }
+        }
+
+        PageOp::Delete { mut pages } => {
+            check(&pages)?;
+            if pages.len() >= page_count as usize {
+                return Err("Un document doit garder au moins une page".to_string());
+            }
+            // De la fin vers le début : supprimer décale les index suivants.
+            pages.sort_unstable();
+            pages.dedup();
+            for index in pages.into_iter().rev() {
+                let page = open_doc
+                    .document
+                    .pages()
+                    .get(index)
+                    .map_err(|e| format!("Page introuvable : {e}"))?;
+                page.delete()
+                    .map_err(|e| format!("Suppression impossible : {e:?}"))?;
+            }
+        }
+
+        PageOp::Move { mut pages, dest } => {
+            check(&pages)?;
+            pages.sort_unstable();
+            pages.dedup();
+            if dest as usize + pages.len() > page_count as usize {
+                return Err("Destination hors du document".to_string());
+            }
+
+            // Ordre visé : les pages restantes, avec le bloc déplacé inséré
+            // à la position demandée.
+            let moved = pages.clone();
+            let rest: Vec<u16> = (0..page_count).filter(|p| !moved.contains(p)).collect();
+            let mut order = Vec::with_capacity(page_count as usize);
+            order.extend_from_slice(&rest[..dest as usize]);
+            order.extend_from_slice(&moved);
+            order.extend_from_slice(&rest[dest as usize..]);
+
+            rebuild_with_order(pdfium, open_doc, &order)?;
+        }
+
+        PageOp::Merge { paths, at } => {
+            if at > page_count {
+                return Err("Position hors du document".to_string());
+            }
+            let mut insert_at = at;
+            for path in paths {
+                let source = pdfium
+                    .load_pdf_from_file(&path, None)
+                    .map_err(|e| format!("Ouverture de « {path} » impossible : {e}"))?;
+                let added = source.pages().len();
+                if added == 0 {
+                    continue;
+                }
+                open_doc
+                    .document
+                    .pages_mut()
+                    .copy_page_range_from_document(
+                        &source,
+                        source.pages().as_range_inclusive(),
+                        insert_at,
+                    )
+                    .map_err(|e| format!("Fusion impossible : {e}"))?;
+                insert_at += added;
+            }
+        }
+    }
+
+    open_doc.dirty = true;
+    Ok(doc_info_from(&open_doc.document, doc_id, &open_doc.path))
+}
+
+/// Écrit une sélection de pages dans un nouveau document.
+fn extract_pages(
+    pdfium: &'static Pdfium,
+    docs: &HashMap<u32, OpenDoc>,
+    doc_id: u32,
+    pages: &[u16],
+    dest_path: &str,
+) -> Result<(), String> {
+    let open_doc = docs.get(&doc_id).ok_or("Document inconnu".to_string())?;
+    if pages.is_empty() {
+        return Err("Aucune page sélectionnée".to_string());
+    }
+
+    let mut out = pdfium
+        .create_new_pdf()
+        .map_err(|e| format!("Création du document : {e}"))?;
+    // Les numéros sont 1-based côté PDFium pour cette API, et l'ordre donné
+    // est respecté : extraire 3,1 produit bien un document [3, 1].
+    let list = pages
+        .iter()
+        .map(|p| (p + 1).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    out.pages_mut()
+        .copy_pages_from_document(&open_doc.document, &list, 0)
+        .map_err(|e| format!("Copie des pages : {e}"))?;
+    out.save_to_file(dest_path)
+        .map_err(|e| format!("Écriture impossible : {e:?}"))
+}
+
+/// Écrit une page en PNG à la résolution demandée (en points par pouce).
+fn export_page_image(
+    docs: &HashMap<u32, OpenDoc>,
+    doc_id: u32,
+    page_index: u16,
+    dpi: u32,
+    dest_path: &str,
+) -> Result<(), String> {
+    let open_doc = docs.get(&doc_id).ok_or("Document inconnu".to_string())?;
+    let page = open_doc
+        .document
+        .pages()
+        .get(page_index)
+        .map_err(|e| format!("Page introuvable : {e}"))?;
+
+    let dpi = dpi.clamp(36, 1200);
+    let width_px = ((page.width().value / 72.0) * dpi as f32).round() as u32;
+    let png = {
+        let config = PdfRenderConfig::new()
+            .set_target_width(width_px.clamp(16, 20_000) as i32)
+            .render_form_data(true);
+        let bitmap = page
+            .render_with_config(&config)
+            .map_err(|e| format!("Rendu impossible : {e}"))?;
+        encode_png(bitmap.as_image())?
+    };
+    std::fs::write(dest_path, &png).map_err(|e| format!("Écriture impossible : {e}"))
 }
 
 /// Convertit un rectangle PDF (origine en bas à gauche) en fragment posé
@@ -1245,6 +1574,7 @@ mod tests {
                 strokes: vec![stroke],
                 notes: vec![note],
             }],
+            dest_path: None,
             reply,
         })
         .unwrap();
@@ -1362,6 +1692,129 @@ mod tests {
         })
         .unwrap();
         assert!(rx.blocking_recv().unwrap().unwrap().is_empty());
+    }
+
+    /// Fusion, rotation, déplacement, suppression, extraction : chaque
+    /// opération doit laisser un document cohérent.
+    #[test]
+    fn edition_des_pages() {
+        let Ok(src) = std::env::var("PLUME_TEST_PDF") else {
+            eprintln!("PLUME_TEST_PDF non défini : test ignoré");
+            return;
+        };
+        let dst = std::env::temp_dir().join("plume-test-edit.pdf");
+        std::fs::copy(&src, &dst).expect("copie du PDF de test");
+        let path = dst.to_string_lossy().into_owned();
+
+        let tx = test_engine();
+        let edit = |id: u32, op: PageOp| -> Result<DocInfo, String> {
+            let (reply, rx) = oneshot::channel();
+            tx.send(PdfRequest::EditPages {
+                doc_id: id,
+                op,
+                reply,
+            })
+            .unwrap();
+            rx.blocking_recv().unwrap()
+        };
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::Open {
+            path: path.clone(),
+            reply,
+        })
+        .unwrap();
+        let info = rx.blocking_recv().unwrap().expect("ouverture");
+        let start = info.page_count;
+
+        // Fusion : le document est ajouté à la fin de lui-même.
+        let merged = edit(
+            info.id,
+            PageOp::Merge {
+                paths: vec![path.clone()],
+                at: start,
+            },
+        )
+        .expect("fusion");
+        assert_eq!(merged.page_count, start * 2);
+
+        // Rotation d'un quart de tour : largeur et hauteur s'échangent.
+        let before = merged.pages[0].clone();
+        let rotated = edit(
+            info.id,
+            PageOp::Rotate {
+                pages: vec![0],
+                quarter_turns: 1,
+            },
+        )
+        .expect("rotation");
+        assert!(
+            (rotated.pages[0].width - before.height).abs() < 1.0,
+            "la rotation n'a pas échangé les dimensions"
+        );
+
+        // Déplacement de la dernière page en tête.
+        let moved = edit(
+            info.id,
+            PageOp::Move {
+                pages: vec![merged.page_count - 1],
+                dest: 0,
+            },
+        )
+        .expect("déplacement");
+        assert_eq!(moved.page_count, merged.page_count);
+
+        // Suppression d'une page.
+        let deleted = edit(
+            info.id,
+            PageOp::Delete {
+                pages: vec![0],
+            },
+        )
+        .expect("suppression");
+        assert_eq!(deleted.page_count, moved.page_count - 1);
+
+        // Une suppression totale doit être refusée.
+        let all: Vec<u16> = (0..deleted.page_count).collect();
+        assert!(edit(info.id, PageOp::Delete { pages: all }).is_err());
+
+        // Extraction de la première page vers un nouveau fichier.
+        let out = std::env::temp_dir().join("plume-test-extract.pdf");
+        let out_path = out.to_string_lossy().into_owned();
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::ExtractPages {
+            doc_id: info.id,
+            pages: vec![0],
+            dest_path: out_path.clone(),
+            reply,
+        })
+        .unwrap();
+        rx.blocking_recv().unwrap().expect("extraction");
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::Open {
+            path: out_path,
+            reply,
+        })
+        .unwrap();
+        let extracted = rx.blocking_recv().unwrap().expect("relecture de l'extrait");
+        assert_eq!(extracted.page_count, 1);
+
+        // Export d'une page en image.
+        let png = std::env::temp_dir().join("plume-test-page.png");
+        let png_path = png.to_string_lossy().into_owned();
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::ExportPageImage {
+            doc_id: info.id,
+            page_index: 0,
+            dpi: 150,
+            dest_path: png_path.clone(),
+            reply,
+        })
+        .unwrap();
+        rx.blocking_recv().unwrap().expect("export image");
+        let written = std::fs::read(&png_path).expect("lecture du PNG");
+        assert_eq!(&written[..8], b"\x89PNG\r\n\x1a\x0a");
     }
 
     /// Diagnostic : affiche les fragments de texte de la première page du PDF

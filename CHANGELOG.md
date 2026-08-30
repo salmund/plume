@@ -7,6 +7,14 @@ versionnage [SemVer](https://semver.org/lang/fr/).
 
 ### Ajouté
 
+- **Manipulation de pages** — dans le panneau Vignettes : sélection multiple
+  (`Ctrl` / `Maj`), réorganisation par glisser-déposer avec repère d'insertion,
+  rotation par quart de tour, suppression, extraction d'une sélection vers un
+  nouveau PDF, insertion des pages d'un autre document, export d'une page en
+  PNG à 200 ppp. Les opérations vivent en mémoire ; `Ctrl+S` les écrit.
+- **Enregistrer sous** (`Ctrl+Maj+S`) — écrit le document, annotations et
+  modifications comprises, dans un nouveau fichier, et l'onglet bascule dessus.
+
 - **Sélection et copie de texte** — couche de texte transparente calée sur le
   bitmap : sélection, glisser et `Ctrl+C` sont ceux du navigateur, sans code
   maison. Chaque fragment est étiré pour que sa largeur rendue corresponde

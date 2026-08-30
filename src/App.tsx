@@ -5,11 +5,21 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import type { DocInfo, DocInk, DocNotes, InkStroke, TextNote } from "./types";
+import type {
+  DocInfo,
+  DocInk,
+  DocNotes,
+  InkStroke,
+  PageOp,
+  TextNote,
+} from "./types";
 import {
   closeDocument,
   copyImageToClipboard,
+  editPages,
   exportImage,
+  exportPageImage,
+  extractPages,
   openDocument,
   saveDocument,
 } from "./lib/api";
@@ -56,6 +66,7 @@ export default function App() {
   const [revs, setRevs] = useState<Record<number, number>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
   const [imageTarget, setImageTarget] = useState<ImageTarget | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
   // L'historique vit dans une ref (les updaters React doivent rester purs) ;
   // ce compteur force le re-rendu de canUndo/canRedo.
   const historyRef = useRef<Record<number, AnnotHistory>>({});
@@ -225,7 +236,7 @@ export default function App() {
   }, []);
 
   const saveDoc = useCallback(
-    async (docId: number) => {
+    async (docId: number, destPath?: string) => {
       const ink = inkRef.current[docId] ?? {};
       const notes = notesRef.current[docId] ?? {};
       const pages = new Set([
@@ -239,11 +250,16 @@ export default function App() {
           notes: (notes[pageIndex] ?? []).filter((n) => n.text.trim()),
         }))
         .filter((p) => p.strokes.length > 0 || p.notes.length > 0);
-      if (payload.length === 0) return;
+      // Un enregistrement sans annotation reste utile : les modifications de
+      // structure vivent en mémoire jusqu'ici.
+      if (payload.length === 0 && !destPath && !structuralRef.current.has(docId)) {
+        return;
+      }
 
       setSavingId(docId);
       try {
-        const info = await saveDocument(docId, payload);
+        const info = await saveDocument(docId, payload, destPath);
+        structuralRef.current.delete(docId);
         setDocs((prev) => prev.map((d) => (d.id === docId ? info : d)));
         setInkByDoc((prev) => ({ ...prev, [docId]: {} }));
         setNotesByDoc((prev) => ({ ...prev, [docId]: {} }));
@@ -255,6 +271,142 @@ export default function App() {
         flash(String(e));
       } finally {
         setSavingId(null);
+      }
+    },
+    [flash],
+  );
+
+  /* ---------- Structure des pages ---------- */
+
+  /** Documents dont la structure a changé sans être encore enregistrée. */
+  const structuralRef = useRef<Set<number>>(new Set());
+
+  /**
+   * Réindexe les annotations en attente après une opération de structure :
+   * `mapping[ancienIndex]` donne le nouvel index, ou `undefined` si la page
+   * a disparu.
+   */
+  const remapPending = useCallback(
+    (docId: number, mapping: Map<number, number>) => {
+      const move = <T,>(byPage: Record<number, T[]>): Record<number, T[]> => {
+        const next: Record<number, T[]> = {};
+        for (const [page, items] of Object.entries(byPage)) {
+          const to = mapping.get(Number(page));
+          if (to !== undefined && items.length > 0) next[to] = items;
+        }
+        return next;
+      };
+      setInkByDoc((prev) => ({ ...prev, [docId]: move(prev[docId] ?? {}) }));
+      setNotesByDoc((prev) => ({ ...prev, [docId]: move(prev[docId] ?? {}) }));
+      // Les états antérieurs ne correspondent plus à la nouvelle pagination.
+      historyRef.current[docId] = { past: [], future: [] };
+      setHistTick((t) => t + 1);
+    },
+    [],
+  );
+
+  /** Ce que devient chaque page après l'opération. */
+  const mappingFor = useCallback(
+    (op: PageOp, pageCount: number): Map<number, number> => {
+      const mapping = new Map<number, number>();
+      if (op.kind === "delete") {
+        const removed = new Set(op.pages);
+        let shift = 0;
+        for (let i = 0; i < pageCount; i++) {
+          if (removed.has(i)) shift++;
+          else mapping.set(i, i - shift);
+        }
+      } else if (op.kind === "move") {
+        const moving = [...op.pages].sort((a, b) => a - b);
+        const rest = Array.from({ length: pageCount }, (_, i) => i).filter(
+          (i) => !moving.includes(i),
+        );
+        const order = [
+          ...rest.slice(0, op.dest),
+          ...moving,
+          ...rest.slice(op.dest),
+        ];
+        order.forEach((from, to) => mapping.set(from, to));
+      } else if (op.kind === "merge") {
+        for (let i = 0; i < pageCount; i++) {
+          mapping.set(i, i < op.at ? i : i + 1);
+        }
+      } else {
+        // Rotation : la pagination ne bouge pas.
+        for (let i = 0; i < pageCount; i++) mapping.set(i, i);
+      }
+      return mapping;
+    },
+    [],
+  );
+
+  const applyPageOp = useCallback(
+    async (docId: number, op: PageOp) => {
+      const doc = docsRef.current.find((d) => d.id === docId);
+      if (!doc) return;
+      setBusyId(docId);
+      try {
+        const info = await editPages(docId, op);
+        // Le remappage se fait sur la pagination d'avant l'opération ; pour
+        // une fusion, seul le décalage compte, pas le nombre exact ajouté.
+        remapPending(docId, mappingFor(op, doc.pageCount));
+        setDocs((prev) => prev.map((d) => (d.id === docId ? info : d)));
+        structuralRef.current.add(docId);
+        setRevs((prev) => ({ ...prev, [docId]: (prev[docId] ?? 0) + 1 }));
+      } catch (e) {
+        flash(String(e));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [flash, remapPending, mappingFor],
+  );
+
+  const extractSelection = useCallback(
+    async (docId: number, pages: number[]) => {
+      if (pages.length === 0) return;
+      const doc = docsRef.current.find((d) => d.id === docId);
+      const dest = await save({
+        defaultPath: `${doc?.title ?? "extrait"} - pages.pdf`,
+        filters: [{ name: "Documents PDF", extensions: ["pdf"] }],
+      });
+      if (!dest) return;
+      try {
+        await extractPages(docId, pages, dest);
+        flash(`${pages.length} page(s) extraite(s).`);
+      } catch (e) {
+        flash(String(e));
+      }
+    },
+    [flash],
+  );
+
+  const mergeInto = useCallback(
+    async (docId: number, at: number) => {
+      const chosen = await open({
+        multiple: true,
+        filters: [{ name: "Documents PDF", extensions: ["pdf"] }],
+      });
+      if (!chosen) return;
+      const paths = Array.isArray(chosen) ? chosen : [chosen];
+      await applyPageOp(docId, { kind: "merge", paths, at });
+    },
+    [applyPageOp],
+  );
+
+  const exportPageAsImage = useCallback(
+    async (docId: number, pageIndex: number) => {
+      const doc = docsRef.current.find((d) => d.id === docId);
+      const dest = await save({
+        defaultPath: `${doc?.title ?? "page"} - p${pageIndex + 1}.png`,
+        filters: [{ name: "Image PNG", extensions: ["png"] }],
+      });
+      if (!dest) return;
+      try {
+        await exportPageImage(docId, pageIndex, 200, dest);
+        flash("Page exportée en image.");
+      } catch (e) {
+        flash(String(e));
       }
     },
     [flash],
@@ -366,16 +518,29 @@ export default function App() {
     if (chosen) openPaths(Array.isArray(chosen) ? chosen : [chosen]);
   }, [openPaths]);
 
+  const saveAs = useCallback(
+    async (docId: number) => {
+      const doc = docsRef.current.find((d) => d.id === docId);
+      const dest = await save({
+        defaultPath: `${doc?.title ?? "document"}.pdf`,
+        filters: [{ name: "Documents PDF", extensions: ["pdf"] }],
+      });
+      if (dest) await saveDoc(docId, dest);
+    },
+    [saveDoc],
+  );
+
   const closeTab = useCallback(
     async (id: number) => {
-      if (docIsDirty(id)) {
+      if (docIsDirty(id) || structuralRef.current.has(id)) {
         const confirmed = await ask(
-          "Ce document contient des annotations non enregistrées.\nFermer sans enregistrer ?",
+          "Ce document contient des modifications non enregistrées.\nFermer sans enregistrer ?",
           { title: "Plume", kind: "warning" },
         );
         if (!confirmed) return;
       }
       closeDocument(id).catch(() => {});
+      structuralRef.current.delete(id);
       delete historyRef.current[id];
       setInkByDoc((prev) => {
         const next = { ...prev };
@@ -485,11 +650,17 @@ export default function App() {
       } else if (e.key === ",") {
         e.preventDefault();
         setShowSettings((v) => !v);
+      } else if (e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        setActiveId((current) => {
+          if (current !== null) saveAs(current);
+          return current;
+        });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openViaDialog, closeTab]);
+  }, [openViaDialog, closeTab, saveAs]);
 
   // Comportements navigateur qui n'ont pas leur place dans une vraie app :
   // zoom du WebView (Ctrl+molette hors visionneuse) et menu contextuel.
@@ -531,8 +702,13 @@ export default function App() {
             rev={revs[activeDoc.id] ?? 0}
             ink={inkByDoc[activeDoc.id] ?? {}}
             notes={notesByDoc[activeDoc.id] ?? {}}
-            dirty={docIsDirty(activeDoc.id)}
+            dirty={docIsDirty(activeDoc.id) || structuralRef.current.has(activeDoc.id)}
             saving={savingId === activeDoc.id}
+            busy={busyId === activeDoc.id}
+            onEditPages={(op) => applyPageOp(activeDoc.id, op)}
+            onExtract={(pages) => extractSelection(activeDoc.id, pages)}
+            onMerge={(at) => mergeInto(activeDoc.id, at)}
+            onExportImage={(page) => exportPageAsImage(activeDoc.id, page)}
             canUndo={(activeHistory?.past.length ?? 0) > 0}
             canRedo={(activeHistory?.future.length ?? 0) > 0}
             onOpen={openViaDialog}

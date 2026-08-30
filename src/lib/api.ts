@@ -4,6 +4,7 @@ import type {
   DocInfo,
   InkStroke,
   PageImageInfo,
+  PageOp,
   SearchHit,
   TextNote,
   TextSegment,
@@ -36,12 +37,40 @@ export interface PageAnnotsPayload {
   notes: TextNote[];
 }
 
-/** Écrit les annotations dans le PDF ; renvoie le document rechargé. */
+/**
+ * Écrit annotations et modifications de structure ; renvoie le document
+ * rechargé. Sans `destPath`, le fichier d'origine est remplacé.
+ */
 export function saveDocument(
   docId: number,
   annots: PageAnnotsPayload[],
+  destPath?: string,
 ): Promise<DocInfo> {
-  return invoke<DocInfo>("save_document", { docId, annots });
+  return invoke<DocInfo>("save_document", { docId, annots, destPath });
+}
+
+/** Applique une opération de structure ; renvoie le document mis à jour. */
+export function editPages(docId: number, op: PageOp): Promise<DocInfo> {
+  return invoke<DocInfo>("edit_pages", { docId, op });
+}
+
+/** Écrit une sélection de pages dans un nouveau PDF. */
+export function extractPages(
+  docId: number,
+  pages: number[],
+  destPath: string,
+): Promise<void> {
+  return invoke("extract_pages", { docId, pages, destPath });
+}
+
+/** Écrit une page en PNG à la résolution demandée. */
+export function exportPageImage(
+  docId: number,
+  pageIndex: number,
+  dpi: number,
+  destPath: string,
+): Promise<void> {
+  return invoke("export_page_image", { docId, pageIndex, dpi, destPath });
 }
 
 /** Fragments de texte d'une page, pour la couche de sélection. */

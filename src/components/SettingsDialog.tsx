@@ -23,7 +23,8 @@ const SHORTCUTS: [string, string][] = [
   ["Marquer la page", "Ctrl+D"],
   ["Rechercher", "Ctrl+F"],
   ["Occurrence suivante · précédente", "Entrée · Maj+Entrée"],
-  ["Enregistrer les annotations", "Ctrl+S"],
+  ["Enregistrer", "Ctrl+S"],
+  ["Enregistrer sous", "Ctrl+Maj+S"],
   ["Annuler · Rétablir", "Ctrl+Z · Ctrl+Y"],
   ["Paramètres", "Ctrl+,"],
 ];
