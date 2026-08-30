@@ -21,6 +21,8 @@ const SHORTCUTS: [string, string][] = [
   ["Ajuster à la largeur", "Ctrl+0"],
   ["Mode annotation", "Ctrl+E · Échap"],
   ["Marquer la page", "Ctrl+D"],
+  ["Rechercher", "Ctrl+F"],
+  ["Occurrence suivante · précédente", "Entrée · Maj+Entrée"],
   ["Enregistrer les annotations", "Ctrl+S"],
   ["Annuler · Rétablir", "Ctrl+Z · Ctrl+Y"],
   ["Paramètres", "Ctrl+,"],

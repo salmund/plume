@@ -2,7 +2,9 @@ mod pdf_engine;
 
 use std::sync::Mutex;
 
-use pdf_engine::{BookmarkNode, DocInfo, PageAnnotsIn, PageImageInfo, PdfRequest};
+use pdf_engine::{
+    BookmarkNode, DocInfo, PageAnnotsIn, PageImageInfo, PdfRequest, SearchHit, TextSegment,
+};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -63,6 +65,47 @@ async fn save_document(
         PdfRequest::Save {
             doc_id,
             annots,
+            reply,
+        },
+    )?;
+    rx.await.map_err(|_| "Moteur PDF interrompu".to_string())?
+}
+
+/// Fragments de texte d'une page, positionnés en points PDF depuis le haut.
+#[tauri::command]
+async fn page_text(
+    state: State<'_, Engine>,
+    doc_id: u32,
+    page_index: u16,
+) -> Result<Vec<TextSegment>, String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    engine_send(
+        &state,
+        PdfRequest::PageText {
+            doc_id,
+            page_index,
+            reply,
+        },
+    )?;
+    rx.await.map_err(|_| "Moteur PDF interrompu".to_string())?
+}
+
+/// Cherche une chaîne dans tout le document.
+#[tauri::command]
+async fn search_document(
+    state: State<'_, Engine>,
+    doc_id: u32,
+    query: String,
+    match_case: bool,
+) -> Result<Vec<SearchHit>, String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    engine_send(
+        &state,
+        PdfRequest::Search {
+            doc_id,
+            query,
+            match_case,
+            limit: 2_000,
             reply,
         },
     )?;
@@ -189,6 +232,8 @@ pub fn run() {
             render_page,
             close_document,
             save_document,
+            page_text,
+            search_document,
             list_bookmarks,
             list_page_images,
             export_image,

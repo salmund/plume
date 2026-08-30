@@ -25,6 +25,21 @@ export interface TextNote {
   color: string;
 }
 
+/** Fragment de texte positionné, en points PDF depuis le haut de la page. */
+export interface TextSegment {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Occurrence trouvée : un rectangle par ligne enjambée. */
+export interface SearchHit {
+  pageIndex: number;
+  rects: TextSegment[];
+}
+
 /** Signet du document (table des matières embarquée dans le PDF). */
 export interface BookmarkNode {
   id: string;

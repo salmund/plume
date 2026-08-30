@@ -12,9 +12,11 @@ import type {
   DocNotes,
   InkStroke,
   InkTool,
+  SearchHit,
   TextNote,
   UserMark,
 } from "../types";
+import { searchDocument } from "../lib/api";
 import {
   loadLastZoom,
   loadMarks,
@@ -24,6 +26,7 @@ import {
 } from "../lib/settings";
 import { PageView } from "./PageView";
 import type { ImageTarget } from "./ImageLayer";
+import { SearchBar } from "./SearchBar";
 import { Sidebar } from "./Sidebar";
 import { Toolbar } from "./Toolbar";
 import {
@@ -111,6 +114,51 @@ export function Viewer({
     () => localStorage.getItem("plume.thumbs") === "1",
   );
   const [marks, setMarks] = useState<UserMark[]>(() => loadMarks(doc.path));
+
+  /* ---------- Recherche ---------- */
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [matchCase, setMatchCase] = useState(false);
+  const [hits, setHits] = useState<SearchHit[] | null>([]);
+  const [activeHit, setActiveHit] = useState(0);
+
+  // Les occurrences par page : chaque page ne reçoit que les siennes.
+  const hitsByPage = useMemo(() => {
+    const map = new Map<number, { hit: SearchHit; index: number }[]>();
+    (hits ?? []).forEach((hit, index) => {
+      const list = map.get(hit.pageIndex) ?? [];
+      list.push({ hit, index });
+      map.set(hit.pageIndex, list);
+    });
+    return map;
+  }, [hits]);
+
+  // La recherche part après une pause de frappe, pour ne pas relancer un
+  // balayage complet à chaque caractère.
+  useEffect(() => {
+    if (!searchOpen || query.trim() === "") {
+      setHits([]);
+      return;
+    }
+    setHits(null);
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      searchDocument(doc.id, query, matchCase)
+        .then((found) => {
+          if (cancelled) return;
+          setHits(found);
+          setActiveHit(0);
+        })
+        .catch(() => {
+          if (!cancelled) setHits([]);
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [doc.id, query, matchCase, searchOpen]);
 
   /* ---------- Annotation ---------- */
 
@@ -329,10 +377,12 @@ export function Viewer({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      // Pendant la saisie d'une note, le clavier appartient au champ.
+      // Pendant la saisie d'une note ou d'une recherche, le clavier
+      // appartient au champ, qui gère lui-même Échap et Entrée.
       if (target?.closest("textarea, input")) return;
       if (e.key === "Escape") {
-        setTool(null);
+        if (searchOpen) setSearchOpen(false);
+        else setTool(null);
         return;
       }
       if (!e.ctrlKey) return;
@@ -355,6 +405,13 @@ export function Viewer({
       } else if (k === "d") {
         e.preventDefault();
         toggleMarkRef.current();
+      } else if (k === "f") {
+        e.preventDefault();
+        searchRef.current.open();
+      } else if (k === "g") {
+        e.preventDefault();
+        if (e.shiftKey) searchRef.current.prev();
+        else searchRef.current.next();
       } else if (k === "z") {
         e.preventDefault();
         if (e.shiftKey) onRedo();
@@ -366,7 +423,7 @@ export function Viewer({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [zoomStep, applyZoom, onSave, onUndo, onRedo, toggleAnnot]);
+  }, [zoomStep, applyZoom, onSave, onUndo, onRedo, toggleAnnot, searchOpen]);
 
   const onScrollTicking = useRef(false);
   const onScroll = useCallback(() => {
@@ -414,6 +471,32 @@ export function Viewer({
     },
     [layout],
   );
+
+  // Amène une occurrence à l'écran : on vise son rectangle, pas juste sa page.
+  const goToHit = useCallback(
+    (index: number) => {
+      const list = hits ?? [];
+      if (list.length === 0) return;
+      const wrapped = ((index % list.length) + list.length) % list.length;
+      setActiveHit(wrapped);
+      const hit = list[wrapped];
+      const el = scrollRef.current;
+      if (!el) return;
+      const rect = hit.rects[0];
+      const target =
+        layout.offsets[hit.pageIndex] + rect.y * scale - el.clientHeight * 0.35;
+      el.scrollTop = Math.max(0, target);
+      setScrollTop(el.scrollTop);
+    },
+    [hits, layout, scale],
+  );
+
+  const searchRef = useRef({ next: () => {}, prev: () => {}, open: () => {} });
+  searchRef.current = {
+    next: () => goToHit(activeHit + 1),
+    prev: () => goToHit(activeHit - 1),
+    open: () => setSearchOpen(true),
+  };
 
   const updateMarks = useCallback(
     (next: UserMark[]) => {
@@ -468,6 +551,10 @@ export function Viewer({
           rev={rev}
           strokes={ink[i] ?? []}
           notes={notes[i] ?? []}
+          hits={(hitsByPage.get(i) ?? []).map((h) => h.hit)}
+          activeHit={(hitsByPage.get(i) ?? []).findIndex(
+            (h) => h.index === activeHit,
+          )}
           annot={annot}
           onAddStroke={onAddStroke}
           onEraseStrokes={onEraseStrokes}
@@ -531,17 +618,38 @@ export function Viewer({
             onRemoveMark={removeMark}
           />
         )}
-        <div
-          ref={scrollRef}
-          onScroll={onScroll}
-          className="bg-canevas relative flex-1 overflow-auto"
-        >
+        {/* La barre de recherche est hors du conteneur défilant : sinon elle
+            partirait vers le haut au premier coup de molette. */}
+        <div className="relative min-w-0 flex-1">
           <div
-            className="relative"
-            style={{ width: innerW, height: layout.total }}
+            ref={scrollRef}
+            onScroll={onScroll}
+            className="bg-canevas absolute inset-0 overflow-auto"
           >
-            {pages}
+            <div
+              className="relative"
+              style={{ width: innerW, height: layout.total }}
+            >
+              {pages}
+            </div>
           </div>
+
+          {searchOpen && (
+            <SearchBar
+              query={query}
+              onQueryChange={setQuery}
+              matchCase={matchCase}
+              onMatchCaseChange={setMatchCase}
+              total={hits === null ? null : hits.length}
+              current={activeHit}
+              onPrev={() => goToHit(activeHit - 1)}
+              onNext={() => goToHit(activeHit + 1)}
+              onClose={() => {
+                setSearchOpen(false);
+                setQuery("");
+              }}
+            />
+          )}
         </div>
       </div>
     </div>

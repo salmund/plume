@@ -4,7 +4,9 @@ import type {
   DocInfo,
   InkStroke,
   PageImageInfo,
+  SearchHit,
   TextNote,
+  TextSegment,
 } from "../types";
 
 export function openDocument(path: string): Promise<DocInfo> {
@@ -40,6 +42,23 @@ export function saveDocument(
   annots: PageAnnotsPayload[],
 ): Promise<DocInfo> {
   return invoke<DocInfo>("save_document", { docId, annots });
+}
+
+/** Fragments de texte d'une page, pour la couche de sélection. */
+export function pageText(
+  docId: number,
+  pageIndex: number,
+): Promise<TextSegment[]> {
+  return invoke<TextSegment[]>("page_text", { docId, pageIndex });
+}
+
+/** Cherche une chaîne dans tout le document. */
+export function searchDocument(
+  docId: number,
+  query: string,
+  matchCase: boolean,
+): Promise<SearchHit[]> {
+  return invoke<SearchHit[]>("search_document", { docId, query, matchCase });
 }
 
 /** Table des matières embarquée dans le PDF (vide s'il n'en a pas). */

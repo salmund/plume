@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { renderPage } from "../lib/api";
-import type { InkStroke, TextNote } from "../types";
+import type { InkStroke, SearchHit, TextNote } from "../types";
 import { AnnotationLayer, type AnnotState } from "./AnnotationLayer";
 import { ImageLayer, type ImageTarget } from "./ImageLayer";
+import { TextLayer } from "./TextLayer";
 import { TextNoteLayer } from "./TextNoteLayer";
 
 interface Props {
@@ -18,6 +19,10 @@ interface Props {
   rev: number;
   strokes: InkStroke[];
   notes: TextNote[];
+  /** Occurrences de recherche situées sur cette page. */
+  hits: SearchHit[];
+  /** Index de l'occurrence active dans `hits`, ou -1. */
+  activeHit: number;
   annot: AnnotState;
   onAddStroke: (pageIndex: number, stroke: InkStroke) => void;
   onEraseStrokes: (pageIndex: number, ids: string[]) => void;
@@ -44,6 +49,8 @@ export function PageView({
   rev,
   strokes,
   notes,
+  hits,
+  activeHit,
   annot,
   onAddStroke,
   onEraseStrokes,
@@ -109,6 +116,8 @@ export function PageView({
           className="block h-full w-full"
         />
       )}
+      {/* Les images en dessous du texte : sur une page à fond illustré, la
+          sélection du texte prime, et le clic droit reste possible autour. */}
       <ImageLayer
         docId={docId}
         pageIndex={pageIndex}
@@ -116,6 +125,15 @@ export function PageView({
         enabled={annot.tool === null}
         rev={rev}
         onContextMenu={onImageMenu}
+      />
+      <TextLayer
+        docId={docId}
+        pageIndex={pageIndex}
+        scale={scale}
+        rev={rev}
+        enabled={annot.tool === null}
+        hits={hits}
+        activeHit={activeHit}
       />
       <AnnotationLayer
         cssWidth={width}

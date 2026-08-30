@@ -7,6 +7,14 @@ versionnage [SemVer](https://semver.org/lang/fr/).
 
 ### Ajouté
 
+- **Sélection et copie de texte** — couche de texte transparente calée sur le
+  bitmap : sélection, glisser et `Ctrl+C` sont ceux du navigateur, sans code
+  maison. Chaque fragment est étiré pour que sa largeur rendue corresponde
+  exactement à celle mesurée par PDFium, sinon la sélection dériverait.
+- **Recherche plein document** (`Ctrl+F`) — barre flottante, compteur
+  d'occurrences, navigation `Entrée` / `Maj+Entrée`, respect de la casse en
+  option ; l'occurrence courante est surlignée en violet, les autres en jaune,
+  et le défilement l'amène au tiers supérieur de la vue.
 - **Signets** — barre latérale à deux onglets (Vignettes / Signets). Le sommaire
   embarqué du PDF est lu avec sa hiérarchie et ses pages de destination ;
   chaque entrée est repliable et la page courante y est mise en évidence.

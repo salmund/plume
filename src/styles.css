@@ -33,6 +33,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Le texte des pages est invisible : c'est le surlignage de sélection qui
+   le révèle, posé sur le bitmap en dessous. */
+.select-text ::selection {
+  background: rgba(110, 140, 255, 0.42);
+}
+
 /* Barres de défilement discrètes, dans le ton du canevas */
 ::-webkit-scrollbar {
   width: 12px;

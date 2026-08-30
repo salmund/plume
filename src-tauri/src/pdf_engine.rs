@@ -65,6 +65,27 @@ pub struct PageAnnotsIn {
     pub notes: Vec<TextNoteIn>,
 }
 
+/// Un fragment de texte d'une page. Coordonnées en points PDF, origine en
+/// haut à gauche : la couche texte du frontend les pose telles quelles.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSegment {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// Une occurrence trouvée dans le document.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub page_index: u16,
+    /// Rectangles à surligner (un par ligne quand l'occurrence en enjambe deux).
+    pub rects: Vec<TextSegment>,
+}
+
 /// Un signet du document (table des matières embarquée dans le PDF).
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +127,19 @@ pub enum PdfRequest {
         doc_id: u32,
         annots: Vec<PageAnnotsIn>,
         reply: oneshot::Sender<Result<DocInfo, String>>,
+    },
+    PageText {
+        doc_id: u32,
+        page_index: u16,
+        reply: oneshot::Sender<Result<Vec<TextSegment>, String>>,
+    },
+    Search {
+        doc_id: u32,
+        query: String,
+        match_case: bool,
+        /// Nombre maximal d'occurrences renvoyées.
+        limit: usize,
+        reply: oneshot::Sender<Result<Vec<SearchHit>, String>>,
     },
     ListBookmarks {
         doc_id: u32,
@@ -150,6 +184,12 @@ pub fn spawn() -> Sender<PdfRequest> {
                                 let _ = reply.send(Err(err.clone()));
                             }
                             PdfRequest::Save { reply, .. } => {
+                                let _ = reply.send(Err(err.clone()));
+                            }
+                            PdfRequest::PageText { reply, .. } => {
+                                let _ = reply.send(Err(err.clone()));
+                            }
+                            PdfRequest::Search { reply, .. } => {
                                 let _ = reply.send(Err(err.clone()));
                             }
                             PdfRequest::ListBookmarks { reply, .. } => {
@@ -203,6 +243,26 @@ pub fn spawn() -> Sender<PdfRequest> {
                         reply,
                     } => {
                         let result = save_with_annots(pdfium, &mut docs, doc_id, &annots);
+                        let _ = reply.send(result);
+                    }
+
+                    PdfRequest::PageText {
+                        doc_id,
+                        page_index,
+                        reply,
+                    } => {
+                        let result = page_text(&docs, doc_id, page_index);
+                        let _ = reply.send(result);
+                    }
+
+                    PdfRequest::Search {
+                        doc_id,
+                        query,
+                        match_case,
+                        limit,
+                        reply,
+                    } => {
+                        let result = search_document(&docs, doc_id, &query, match_case, limit);
                         let _ = reply.send(result);
                     }
 
@@ -496,6 +556,101 @@ fn quad_bounds(q: &PdfQuadPoints) -> (f32, f32, f32, f32) {
     let min_y = ys.iter().cloned().fold(f32::MAX, f32::min);
     let max_y = ys.iter().cloned().fold(f32::MIN, f32::max);
     (min_x, min_y, max_x, max_y)
+}
+
+/// Convertit un rectangle PDF (origine en bas à gauche) en fragment posé
+/// depuis le haut de la page, tel que l'attend la couche texte du frontend.
+fn segment_from_rect(rect: &PdfRect, page_height: f32, text: String) -> TextSegment {
+    TextSegment {
+        text,
+        x: rect.left().value,
+        y: page_height - rect.top().value,
+        width: rect.width().value,
+        height: rect.height().value,
+    }
+}
+
+/// Extrait le texte d'une page, découpé en fragments positionnés.
+fn page_text(
+    docs: &HashMap<u32, OpenDoc>,
+    doc_id: u32,
+    page_index: u16,
+) -> Result<Vec<TextSegment>, String> {
+    let open_doc = docs.get(&doc_id).ok_or("Document inconnu".to_string())?;
+    let page = open_doc
+        .document
+        .pages()
+        .get(page_index)
+        .map_err(|e| format!("Page introuvable : {e}"))?;
+    let page_height = page.height().value;
+    let text = page.text().map_err(|e| format!("Texte illisible : {e:?}"))?;
+
+    let mut segments = Vec::new();
+    for segment in text.segments().iter() {
+        let content = segment.text();
+        // Les fragments vides ou purement blancs n'apportent rien à la
+        // sélection et alourdiraient le DOM.
+        if content.trim().is_empty() {
+            continue;
+        }
+        let bounds = segment.bounds();
+        if bounds.width().value <= 0.0 || bounds.height().value <= 0.0 {
+            continue;
+        }
+        segments.push(segment_from_rect(&bounds, page_height, content));
+    }
+    Ok(segments)
+}
+
+/// Cherche une chaîne dans tout le document.
+fn search_document(
+    docs: &HashMap<u32, OpenDoc>,
+    doc_id: u32,
+    query: &str,
+    match_case: bool,
+    limit: usize,
+) -> Result<Vec<SearchHit>, String> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let open_doc = docs.get(&doc_id).ok_or("Document inconnu".to_string())?;
+    let options = PdfSearchOptions::new().match_case(match_case);
+
+    let mut hits = Vec::new();
+    'pages: for (index, page) in open_doc.document.pages().iter().enumerate() {
+        let page_height = page.height().value;
+        let Ok(text) = page.text() else { continue };
+        let Ok(search) = text.search(query, &options) else {
+            continue;
+        };
+
+        for result in search.iter(PdfSearchDirection::SearchForward) {
+            // Une occurrence peut enjamber deux lignes : chaque segment
+            // devient un rectangle à surligner.
+            let rects: Vec<TextSegment> = result
+                .iter()
+                .filter_map(|segment| {
+                    let bounds = segment.bounds();
+                    if bounds.width().value <= 0.0 || bounds.height().value <= 0.0 {
+                        None
+                    } else {
+                        Some(segment_from_rect(&bounds, page_height, String::new()))
+                    }
+                })
+                .collect();
+            if rects.is_empty() {
+                continue;
+            }
+            hits.push(SearchHit {
+                page_index: index as u16,
+                rects,
+            });
+            if hits.len() >= limit {
+                break 'pages;
+            }
+        }
+    }
+    Ok(hits)
 }
 
 /// Profondeur maximale de l'arbre des signets, et nombre total de nœuds.
@@ -1034,6 +1189,67 @@ mod tests {
             );
         }
         println!("{} image(s) dans {path}", images.len());
+    }
+
+    /// Extrait le texte d'une page et y retrouve un mot par la recherche.
+    #[test]
+    fn texte_et_recherche() {
+        let Ok(path) = std::env::var("PLUME_TEST_PDF") else {
+            eprintln!("PLUME_TEST_PDF non défini : test ignoré");
+            return;
+        };
+        let tx = test_engine();
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::Open { path, reply }).unwrap();
+        let info = rx.blocking_recv().unwrap().expect("ouverture");
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::PageText {
+            doc_id: info.id,
+            page_index: 0,
+            reply,
+        })
+        .unwrap();
+        let segments = rx.blocking_recv().unwrap().expect("texte de la page");
+        assert!(!segments.is_empty(), "aucun fragment de texte extrait");
+        for segment in &segments {
+            assert!(segment.width > 0.0 && segment.height > 0.0);
+            assert!(segment.y >= -1.0, "fragment au-dessus de la page");
+        }
+
+        // Un mot présent dans le premier fragment doit se retrouver.
+        let word = segments
+            .iter()
+            .flat_map(|s| s.text.split_whitespace())
+            .find(|w| w.chars().count() >= 4)
+            .expect("aucun mot exploitable")
+            .to_string();
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::Search {
+            doc_id: info.id,
+            query: word.clone(),
+            match_case: false,
+            limit: 100,
+            reply,
+        })
+        .unwrap();
+        let hits = rx.blocking_recv().unwrap().expect("recherche");
+        assert!(!hits.is_empty(), "« {word} » introuvable alors qu'il est là");
+        assert!(!hits[0].rects.is_empty(), "occurrence sans rectangle");
+
+        // Une chaîne absurde ne doit rien renvoyer.
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::Search {
+            doc_id: info.id,
+            query: "zzqxwvk".into(),
+            match_case: false,
+            limit: 100,
+            reply,
+        })
+        .unwrap();
+        assert!(rx.blocking_recv().unwrap().unwrap().is_empty());
     }
 
     /// Diagnostic : affiche le sommaire du PDF pointé par PLUME_DIAG_PDF.
