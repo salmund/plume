@@ -25,6 +25,20 @@ export interface TextNote {
   color: string;
 }
 
+/** Signet du document (table des matières embarquée dans le PDF). */
+export interface BookmarkNode {
+  id: string;
+  title: string;
+  pageIndex: number | null;
+  children: BookmarkNode[];
+}
+
+/** Signet posé par l'utilisateur, conservé localement. */
+export interface UserMark {
+  pageIndex: number;
+  label: string;
+}
+
 export interface PageImageInfo {
   /** « 3 », ou « 1.13 » pour une image imbriquée dans un Form XObject. */
   objectPath: string;

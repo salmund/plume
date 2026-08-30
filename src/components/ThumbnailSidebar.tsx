@@ -110,7 +110,7 @@ function Thumb({
   );
 }
 
-export function ThumbnailSidebar({
+export function ThumbnailList({
   doc,
   rev,
   current,
@@ -122,10 +122,7 @@ export function ThumbnailSidebar({
   onJump: (index: number) => void;
 }) {
   return (
-    <div
-      data-thumbs
-      className="bg-pupitre border-trait flex w-[140px] shrink-0 flex-col gap-4 overflow-y-auto border-r px-4 py-4"
-    >
+    <div className="flex flex-col items-center gap-4 px-4 py-4">
       {doc.pages.map((page, i) => (
         <Thumb
           key={i}

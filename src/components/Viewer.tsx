@@ -13,11 +13,18 @@ import type {
   InkStroke,
   InkTool,
   TextNote,
+  UserMark,
 } from "../types";
-import { loadLastZoom, saveLastZoom, useSettings } from "../lib/settings";
+import {
+  loadLastZoom,
+  loadMarks,
+  saveLastZoom,
+  saveMarks,
+  useSettings,
+} from "../lib/settings";
 import { PageView } from "./PageView";
 import type { ImageTarget } from "./ImageLayer";
-import { ThumbnailSidebar } from "./ThumbnailSidebar";
+import { Sidebar } from "./Sidebar";
 import { Toolbar } from "./Toolbar";
 import {
   AnnotationBar,
@@ -103,6 +110,7 @@ export function Viewer({
   const [showThumbs, setShowThumbs] = useState(
     () => localStorage.getItem("plume.thumbs") === "1",
   );
+  const [marks, setMarks] = useState<UserMark[]>(() => loadMarks(doc.path));
 
   /* ---------- Annotation ---------- */
 
@@ -312,6 +320,11 @@ export function Viewer({
     return () => el.removeEventListener("wheel", onWheel);
   }, [zoomStep]);
 
+  // Le raccourci de signet est câblé par une ref : il dépend de la page
+  // courante, qui change à chaque défilement, et on ne veut pas réinstaller
+  // l'écouteur clavier à chaque fois.
+  const toggleMarkRef = useRef(() => {});
+
   // Raccourcis clavier de la visionneuse.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -339,6 +352,9 @@ export function Viewer({
       } else if (k === "e") {
         e.preventDefault();
         toggleAnnot();
+      } else if (k === "d") {
+        e.preventDefault();
+        toggleMarkRef.current();
       } else if (k === "z") {
         e.preventDefault();
         if (e.shiftKey) onRedo();
@@ -399,6 +415,36 @@ export function Viewer({
     [layout],
   );
 
+  const updateMarks = useCallback(
+    (next: UserMark[]) => {
+      next.sort((a, b) => a.pageIndex - b.pageIndex);
+      setMarks(next);
+      saveMarks(doc.path, next);
+    },
+    [doc.path],
+  );
+
+  const addMark = useCallback(() => {
+    if (marks.some((m) => m.pageIndex === currentPage)) return;
+    updateMarks([
+      ...marks,
+      { pageIndex: currentPage, label: `Page ${currentPage + 1}` },
+    ]);
+    if (!showThumbs) toggleThumbs();
+  }, [marks, currentPage, updateMarks, showThumbs, toggleThumbs]);
+
+  const removeMark = useCallback(
+    (pageIndex: number) => {
+      updateMarks(marks.filter((m) => m.pageIndex !== pageIndex));
+    },
+    [marks, updateMarks],
+  );
+
+  toggleMarkRef.current = () => {
+    if (marks.some((m) => m.pageIndex === currentPage)) removeMark(currentPage);
+    else addMark();
+  };
+
   const innerW = Math.max(box.w, maxW * scale + PAD_X * 2);
   const annot = {
     tool,
@@ -444,6 +490,8 @@ export function Viewer({
         showThumbs={showThumbs}
         annotActive={tool !== null}
         dirty={dirty}
+        marked={marks.some((m) => m.pageIndex === currentPage)}
+        onToggleMark={() => toggleMarkRef.current()}
         onToggleThumbs={toggleThumbs}
         onToggleAnnot={toggleAnnot}
         onOpen={onOpen}
@@ -473,11 +521,14 @@ export function Viewer({
       )}
       <div className="flex min-h-0 flex-1">
         {showThumbs && (
-          <ThumbnailSidebar
+          <Sidebar
             doc={doc}
             rev={rev}
             current={currentPage}
+            marks={marks}
             onJump={jumpTo}
+            onAddMark={addMark}
+            onRemoveMark={removeMark}
           />
         )}
         <div

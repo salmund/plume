@@ -13,9 +13,18 @@ export interface Settings {
   defaultZoom: DefaultZoom;
   /** Rouvrir les documents de la dernière session au démarrage. */
   restoreSession: boolean;
+  /** Encadrer les images au survol. Le clic droit reste actif sans ça. */
+  imageHighlight: boolean;
+  /** Afficher l'infobulle au survol d'une image. */
+  imageTooltip: boolean;
 }
 
-const DEFAULTS: Settings = { defaultZoom: "p100", restoreSession: true };
+const DEFAULTS: Settings = {
+  defaultZoom: "p100",
+  restoreSession: true,
+  imageHighlight: true,
+  imageTooltip: true,
+};
 const KEY = "plume.settings";
 
 function loadSettings(): Settings {
@@ -104,6 +113,39 @@ export function loadSession(): Session {
     };
   } catch {
     return { paths: [], activePath: null };
+  }
+}
+
+/* ---------- Signets personnels ---------- */
+
+import type { UserMark } from "../types";
+
+function marksKey(path: string): string {
+  return `plume.marks:${path}`;
+}
+
+export function loadMarks(path: string): UserMark[] {
+  try {
+    const raw = localStorage.getItem(marksKey(path));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (m: unknown): m is UserMark =>
+        typeof m === "object" &&
+        m !== null &&
+        typeof (m as UserMark).pageIndex === "number",
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function saveMarks(path: string, marks: UserMark[]) {
+  try {
+    localStorage.setItem(marksKey(path), JSON.stringify(marks));
+  } catch {
+    /* ignoré */
   }
 }
 

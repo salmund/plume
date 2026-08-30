@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  Bookmark,
   ChevronDown,
   ChevronUp,
   FolderOpen,
@@ -20,6 +21,8 @@ interface Props {
   showThumbs: boolean;
   annotActive: boolean;
   dirty: boolean;
+  marked: boolean;
+  onToggleMark: () => void;
   onToggleThumbs: () => void;
   onToggleAnnot: () => void;
   onOpen: () => void;
@@ -67,6 +70,8 @@ export function Toolbar({
   showThumbs,
   annotActive,
   dirty,
+  marked,
+  onToggleMark,
   onToggleThumbs,
   onToggleAnnot,
   onOpen,
@@ -146,6 +151,22 @@ export function Toolbar({
         </div>
         <IconButton label="Page suivante" onClick={() => onJump(currentPage + 1)}>
           <ChevronDown size={16} strokeWidth={1.75} />
+        </IconButton>
+        <div className="bg-trait mx-1 h-5 w-px" />
+        <IconButton
+          label={
+            marked
+              ? "Retirer le signet de cette page (Ctrl+D)"
+              : "Marquer cette page (Ctrl+D)"
+          }
+          onClick={onToggleMark}
+          active={marked}
+        >
+          <Bookmark
+            size={15}
+            strokeWidth={1.75}
+            fill={marked ? "currentColor" : "none"}
+          />
         </IconButton>
       </div>
 

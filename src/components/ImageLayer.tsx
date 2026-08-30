@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listPageImages } from "../lib/api";
+import { useSettings } from "../lib/settings";
 import type { PageImageInfo } from "../types";
 
 export interface ImageTarget {
@@ -33,6 +34,7 @@ export function ImageLayer({
   rev,
   onContextMenu,
 }: Props) {
+  const { settings } = useSettings();
   const [images, setImages] = useState<PageImageInfo[]>([]);
 
   useEffect(() => {
@@ -56,7 +58,12 @@ export function ImageLayer({
         <button
           key={image.objectPath}
           type="button"
-          title="Clic droit pour enregistrer ou copier l'image"
+          // Le clic droit reste actif même sans repère visuel.
+          title={
+            settings.imageTooltip
+              ? "Clic droit pour enregistrer ou copier l'image"
+              : undefined
+          }
           onContextMenu={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -67,7 +74,11 @@ export function ImageLayer({
               clientY: e.clientY,
             });
           }}
-          className="absolute rounded-[2px] transition-shadow hover:shadow-[0_0_0_2px_var(--color-violette)]"
+          className={`absolute rounded-[2px] ${
+            settings.imageHighlight
+              ? "transition-shadow hover:shadow-[0_0_0_2px_var(--color-violette)]"
+              : ""
+          }`}
           style={{
             left: image.x * scale,
             top: image.y * scale,

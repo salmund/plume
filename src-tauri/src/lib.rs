@@ -2,7 +2,7 @@ mod pdf_engine;
 
 use std::sync::Mutex;
 
-use pdf_engine::{DocInfo, PageAnnotsIn, PageImageInfo, PdfRequest};
+use pdf_engine::{BookmarkNode, DocInfo, PageAnnotsIn, PageImageInfo, PdfRequest};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -66,6 +66,17 @@ async fn save_document(
             reply,
         },
     )?;
+    rx.await.map_err(|_| "Moteur PDF interrompu".to_string())?
+}
+
+/// Lit la table des matières (signets) embarquée dans le PDF.
+#[tauri::command]
+async fn list_bookmarks(
+    state: State<'_, Engine>,
+    doc_id: u32,
+) -> Result<Vec<BookmarkNode>, String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    engine_send(&state, PdfRequest::ListBookmarks { doc_id, reply })?;
     rx.await.map_err(|_| "Moteur PDF interrompu".to_string())?
 }
 
@@ -178,6 +189,7 @@ pub fn run() {
             render_page,
             close_document,
             save_document,
+            list_bookmarks,
             list_page_images,
             export_image,
             copy_image_to_clipboard,

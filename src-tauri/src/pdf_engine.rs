@@ -65,6 +65,18 @@ pub struct PageAnnotsIn {
     pub notes: Vec<TextNoteIn>,
 }
 
+/// Un signet du document (table des matières embarquée dans le PDF).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BookmarkNode {
+    /// Chemin dans l'arbre, « 0 » ou « 0.2.1 » : identifiant stable pour l'UI.
+    pub id: String,
+    pub title: String,
+    /// Page visée, absente si le signet ne pointe pas vers ce document.
+    pub page_index: Option<u16>,
+    pub children: Vec<BookmarkNode>,
+}
+
 /// Une image détectée sur une page. Coordonnées en points PDF,
 /// origine en haut à gauche.
 #[derive(Serialize, Clone)]
@@ -94,6 +106,10 @@ pub enum PdfRequest {
         doc_id: u32,
         annots: Vec<PageAnnotsIn>,
         reply: oneshot::Sender<Result<DocInfo, String>>,
+    },
+    ListBookmarks {
+        doc_id: u32,
+        reply: oneshot::Sender<Result<Vec<BookmarkNode>, String>>,
     },
     ListImages {
         doc_id: u32,
@@ -134,6 +150,9 @@ pub fn spawn() -> Sender<PdfRequest> {
                                 let _ = reply.send(Err(err.clone()));
                             }
                             PdfRequest::Save { reply, .. } => {
+                                let _ = reply.send(Err(err.clone()));
+                            }
+                            PdfRequest::ListBookmarks { reply, .. } => {
                                 let _ = reply.send(Err(err.clone()));
                             }
                             PdfRequest::ListImages { reply, .. } => {
@@ -184,6 +203,11 @@ pub fn spawn() -> Sender<PdfRequest> {
                         reply,
                     } => {
                         let result = save_with_annots(pdfium, &mut docs, doc_id, &annots);
+                        let _ = reply.send(result);
+                    }
+
+                    PdfRequest::ListBookmarks { doc_id, reply } => {
+                        let result = list_bookmarks(&docs, doc_id);
                         let _ = reply.send(result);
                     }
 
@@ -474,6 +498,94 @@ fn quad_bounds(q: &PdfQuadPoints) -> (f32, f32, f32, f32) {
     (min_x, min_y, max_x, max_y)
 }
 
+/// Profondeur maximale de l'arbre des signets, et nombre total de nœuds.
+/// Un PDF malformé peut contenir un cycle : ces bornes évitent la boucle.
+const MAX_BOOKMARK_DEPTH: usize = 12;
+const MAX_BOOKMARKS: usize = 5_000;
+
+/// Page visée par un signet : la destination directe, sinon celle portée par
+/// son action « aller à » interne au document.
+fn bookmark_page(bookmark: &PdfBookmark<'_>) -> Option<u16> {
+    if let Some(destination) = bookmark.destination() {
+        if let Ok(index) = destination.page_index() {
+            return Some(index);
+        }
+    }
+    if let Some(PdfAction::LocalDestination(action)) = bookmark.action() {
+        if let Ok(destination) = action.destination() {
+            if let Ok(index) = destination.page_index() {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn collect_bookmarks(
+    bookmark: &PdfBookmark<'_>,
+    prefix: &str,
+    depth: usize,
+    budget: &mut usize,
+) -> Vec<BookmarkNode> {
+    let mut nodes = Vec::new();
+    for (index, child) in bookmark.iter_direct_children().enumerate() {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+
+        let id = if prefix.is_empty() {
+            index.to_string()
+        } else {
+            format!("{prefix}.{index}")
+        };
+        let children = if depth + 1 < MAX_BOOKMARK_DEPTH {
+            collect_bookmarks(&child, &id, depth + 1, budget)
+        } else {
+            Vec::new()
+        };
+        nodes.push(BookmarkNode {
+            title: child.title().unwrap_or_else(|| "Sans titre".to_string()),
+            page_index: bookmark_page(&child),
+            id,
+            children,
+        });
+    }
+    nodes
+}
+
+/// Lit la table des matières embarquée dans le PDF.
+fn list_bookmarks(
+    docs: &HashMap<u32, OpenDoc>,
+    doc_id: u32,
+) -> Result<Vec<BookmarkNode>, String> {
+    let open_doc = docs.get(&doc_id).ok_or("Document inconnu".to_string())?;
+    let bookmarks = open_doc.document.bookmarks();
+    let Some(root) = bookmarks.root() else {
+        return Ok(Vec::new());
+    };
+
+    let mut budget = MAX_BOOKMARKS;
+    // `root()` renvoie le premier signet de premier niveau : c'est lui-même un
+    // nœud à afficher, au même titre que ses frères.
+    let mut nodes = Vec::new();
+    for (index, sibling) in root.iter_siblings().enumerate() {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        let id = index.to_string();
+        let children = collect_bookmarks(&sibling, &id, 1, &mut budget);
+        nodes.push(BookmarkNode {
+            title: sibling.title().unwrap_or_else(|| "Sans titre".to_string()),
+            page_index: bookmark_page(&sibling),
+            id,
+            children,
+        });
+    }
+    Ok(nodes)
+}
+
 /// Transformation affine PDF (a, b, c, d, e, f) appliquée à un point.
 #[derive(Clone, Copy)]
 struct Transform {
@@ -518,6 +630,14 @@ impl Transform {
 /// Profondeur maximale d'imbrication des Form XObject explorée.
 const MAX_FORM_DEPTH: usize = 6;
 
+/// En deçà, une image est un filet ou une puce décorative : viser une zone
+/// aussi petite n'a pas de sens, et elle encombrerait la page de cibles.
+const MIN_IMAGE_SIZE_PT: f32 = 8.0;
+
+/// Deux images dont les rectangles coïncident à cette tolérance près sont
+/// considérées comme un même visuel (calques empilés, masque + image).
+const DEDUPE_TOLERANCE_PT: f32 = 1.5;
+
 /// Parcourt les objets d'un conteneur et collecte les images, en descendant
 /// dans les Form XObject (où les générateurs de PDF placent le plus souvent
 /// les illustrations) et en composant leurs matrices au passage.
@@ -525,6 +645,7 @@ fn collect_images<'a>(
     objects: impl Iterator<Item = PdfPageObject<'a>>,
     to_page: Transform,
     prefix: &str,
+    page_width: f32,
     page_height: f32,
     depth: usize,
     out: &mut Vec<PageImageInfo>,
@@ -551,15 +672,25 @@ fn collect_images<'a>(
                 let max_x = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max);
                 let min_y = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min);
                 let max_y = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max);
-                if max_x - min_x < 4.0 || max_y - min_y < 4.0 {
-                    continue; // trop petit pour être une image utile
+
+                // Une image peut déborder de la page : seule la partie visible
+                // est cliquable.
+                let vis_x0 = min_x.max(0.0);
+                let vis_x1 = max_x.min(page_width);
+                let vis_y0 = min_y.max(0.0);
+                let vis_y1 = max_y.min(page_height);
+                if vis_x1 - vis_x0 < MIN_IMAGE_SIZE_PT
+                    || vis_y1 - vis_y0 < MIN_IMAGE_SIZE_PT
+                {
+                    continue; // hors page, ou trop petite pour être visée
                 }
+
                 out.push(PageImageInfo {
                     object_path: path,
-                    x: min_x,
-                    y: page_height - max_y,
-                    width: max_x - min_x,
-                    height: max_y - min_y,
+                    x: vis_x0,
+                    y: page_height - vis_y1,
+                    width: vis_x1 - vis_x0,
+                    height: vis_y1 - vis_y0,
                 });
             }
 
@@ -582,6 +713,7 @@ fn collect_images<'a>(
                     form.iter(),
                     inner.then(&to_page),
                     &path,
+                    page_width,
                     page_height,
                     depth + 1,
                     out,
@@ -606,24 +738,42 @@ fn list_page_images(
         .pages()
         .get(page_index)
         .map_err(|e| format!("Page introuvable : {e}"))?;
+    let page_width = page.width().value;
     let page_height = page.height().value;
 
-    let mut result = Vec::new();
+    let mut found = Vec::new();
     collect_images(
         page.objects().iter(),
         Transform::IDENTITY,
         "",
+        page_width,
         page_height,
         0,
-        &mut result,
+        &mut found,
     );
+
     // Les grandes images d'abord : une vignette posée sur un fond reste
-    // atteignable même si elle le recouvre partiellement.
-    result.sort_by(|a, b| {
+    // atteignable même si le fond la recouvre.
+    found.sort_by(|a, b| {
         (b.width * b.height)
             .partial_cmp(&(a.width * a.height))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    // Un même visuel est souvent posé en plusieurs calques superposés (image
+    // + son masque, ou doublon d'export) : une seule cible suffit.
+    let mut result: Vec<PageImageInfo> = Vec::with_capacity(found.len());
+    for image in found {
+        let duplicate = result.iter().any(|kept| {
+            (kept.x - image.x).abs() <= DEDUPE_TOLERANCE_PT
+                && (kept.y - image.y).abs() <= DEDUPE_TOLERANCE_PT
+                && (kept.width - image.width).abs() <= DEDUPE_TOLERANCE_PT
+                && (kept.height - image.height).abs() <= DEDUPE_TOLERANCE_PT
+        });
+        if !duplicate {
+            result.push(image);
+        }
+    }
     Ok(result)
 }
 
@@ -884,6 +1034,46 @@ mod tests {
             );
         }
         println!("{} image(s) dans {path}", images.len());
+    }
+
+    /// Diagnostic : affiche le sommaire du PDF pointé par PLUME_DIAG_PDF.
+    #[test]
+    fn diagnostic_signets() {
+        let Ok(path) = std::env::var("PLUME_DIAG_PDF") else {
+            return;
+        };
+        let tx = test_engine();
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::Open {
+            path: path.clone(),
+            reply,
+        })
+        .unwrap();
+        let info = rx.blocking_recv().unwrap().expect("ouverture");
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::ListBookmarks {
+            doc_id: info.id,
+            reply,
+        })
+        .unwrap();
+        let nodes = rx.blocking_recv().unwrap().expect("signets");
+
+        fn show(nodes: &[BookmarkNode], depth: usize, total: &mut usize) {
+            for node in nodes {
+                *total += 1;
+                let page = node
+                    .page_index
+                    .map(|p| format!("p.{}", p + 1))
+                    .unwrap_or_else(|| "—".to_string());
+                println!("{:indent$}• {} ({page})", "", node.title, indent = depth * 2);
+                show(&node.children, depth + 1, total);
+            }
+        }
+        let mut total = 0;
+        show(&nodes, 1, &mut total);
+        println!("{total} signet(s) dans {path}");
     }
 
     /// Repère les images d'une page et en extrait une en PNG.

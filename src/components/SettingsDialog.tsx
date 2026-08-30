@@ -20,6 +20,7 @@ const SHORTCUTS: [string, string][] = [
   ["Zoom", "Ctrl+molette · Ctrl+±"],
   ["Ajuster à la largeur", "Ctrl+0"],
   ["Mode annotation", "Ctrl+E · Échap"],
+  ["Marquer la page", "Ctrl+D"],
   ["Enregistrer les annotations", "Ctrl+S"],
   ["Annuler · Rétablir", "Ctrl+Z · Ctrl+Y"],
   ["Paramètres", "Ctrl+,"],
@@ -30,6 +31,47 @@ function Kbd({ children }: { children: React.ReactNode }) {
     <kbd className="font-chiffres border-trait rounded border bg-white/4 px-1.5 py-0.5 text-[11px]">
       {children}
     </kbd>
+  );
+}
+
+function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-[13px]">{label}</div>
+        {hint && (
+          <div className="text-sourdine mt-0.5 text-[11.5px] leading-snug">
+            {hint}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        onClick={() => onChange(!checked)}
+        className={`relative mt-0.5 h-[22px] w-[40px] shrink-0 rounded-full transition-colors ${
+          checked ? "bg-violette" : "bg-trait"
+        }`}
+      >
+        <span
+          className={`absolute top-[3px] size-4 rounded-full transition-all ${
+            checked ? "left-[21px] bg-[#14141b]" : "bg-sourdine left-[3px]"
+          }`}
+        />
+      </button>
+    </div>
   );
 }
 
@@ -111,33 +153,32 @@ export function SettingsDialog({
 
           <section>
             <div className="text-sourdine mb-2.5 text-[11px] font-medium tracking-[0.14em] uppercase">
+              Images
+            </div>
+            <div className="flex flex-col gap-3">
+              <Toggle
+                label="Encadrer les images au survol"
+                hint="Le clic droit reste disponible sans l'encadré."
+                checked={settings.imageHighlight}
+                onChange={(v) => update({ imageHighlight: v })}
+              />
+              <Toggle
+                label="Afficher l'infobulle au survol"
+                checked={settings.imageTooltip}
+                onChange={(v) => update({ imageTooltip: v })}
+              />
+            </div>
+          </section>
+
+          <section>
+            <div className="text-sourdine mb-2.5 text-[11px] font-medium tracking-[0.14em] uppercase">
               Démarrage
             </div>
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-[13px]">
-                Rouvrir les documents de la dernière session
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={settings.restoreSession}
-                aria-label="Rouvrir les documents de la dernière session"
-                onClick={() =>
-                  update({ restoreSession: !settings.restoreSession })
-                }
-                className={`relative h-[22px] w-[40px] shrink-0 rounded-full transition-colors ${
-                  settings.restoreSession ? "bg-violette" : "bg-trait"
-                }`}
-              >
-                <span
-                  className={`absolute top-[3px] size-4 rounded-full transition-all ${
-                    settings.restoreSession
-                      ? "left-[21px] bg-[#14141b]"
-                      : "bg-sourdine left-[3px]"
-                  }`}
-                />
-              </button>
-            </div>
+            <Toggle
+              label="Rouvrir les documents de la dernière session"
+              checked={settings.restoreSession}
+              onChange={(v) => update({ restoreSession: v })}
+            />
           </section>
 
           <section>

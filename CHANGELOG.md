@@ -3,6 +3,24 @@
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le
 versionnage [SemVer](https://semver.org/lang/fr/).
 
+## [Non publié]
+
+### Ajouté
+
+- **Signets** — barre latérale à deux onglets (Vignettes / Signets). Le sommaire
+  embarqué du PDF est lu avec sa hiérarchie et ses pages de destination ;
+  chaque entrée est repliable et la page courante y est mise en évidence.
+- **Signets personnels** — marquer une page (`Ctrl+D` ou l'icône de la barre
+  d'outils) pour la retrouver, conservé par document.
+- **Réglages d'images** — l'encadré de survol et l'infobulle se désactivent
+  indépendamment ; le clic droit reste disponible dans tous les cas.
+
+### Modifié
+
+- Détection d'images affinée : rognage à la surface visible de la page, seuil
+  minimal porté à 8 pt, et fusion des calques superposés qui décrivent un même
+  visuel (image + masque, doublons d'export).
+
 ## [0.1.0] — 2026-08-30
 
 Première version publique.

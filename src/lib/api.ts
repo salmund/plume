@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DocInfo, InkStroke, PageImageInfo, TextNote } from "../types";
+import type {
+  BookmarkNode,
+  DocInfo,
+  InkStroke,
+  PageImageInfo,
+  TextNote,
+} from "../types";
 
 export function openDocument(path: string): Promise<DocInfo> {
   return invoke<DocInfo>("open_document", { path });
@@ -34,6 +40,11 @@ export function saveDocument(
   annots: PageAnnotsPayload[],
 ): Promise<DocInfo> {
   return invoke<DocInfo>("save_document", { docId, annots });
+}
+
+/** Table des matières embarquée dans le PDF (vide s'il n'en a pas). */
+export function listBookmarks(docId: number): Promise<BookmarkNode[]> {
+  return invoke<BookmarkNode[]>("list_bookmarks", { docId });
 }
 
 /** Images présentes sur une page, avec leurs positions en points PDF. */
