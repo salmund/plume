@@ -16,20 +16,52 @@ interface Props {
   activeHit: number;
 }
 
+const TEXT_FONT = "sans-serif";
+
+/**
+ * Hauteur occupée par une police à corps 1 : ascendante + descendante.
+ * Le surlignage de sélection épouse cette zone, pas le corps nominal ; sans
+ * ce facteur, les rectangles seraient trop hauts et décalés vers le bas.
+ */
+let fontRatioCache: number | null = null;
+function fontRatio(): number {
+  if (fontRatioCache !== null) return fontRatioCache;
+  let ratio = 1.16; // repli si la mesure échoue
+  try {
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (ctx) {
+      ctx.font = `100px ${TEXT_FONT}`;
+      const m = ctx.measureText("Mgjpq");
+      const sum = m.fontBoundingBoxAscent + m.fontBoundingBoxDescent;
+      if (sum > 0) ratio = sum / 100;
+    }
+  } catch {
+    /* repli conservé */
+  }
+  fontRatioCache = ratio;
+  return ratio;
+}
+
 /**
  * Texte invisible calé sur le bitmap de la page : la sélection, le copier et
  * le glisser du curseur sont ceux du navigateur, sans code maison.
  *
- * Chaque fragment est posé à sa position PDF puis étiré horizontalement pour
- * que sa largeur rendue corresponde exactement à celle mesurée par PDFium —
- * sans quoi la sélection dériverait le long de la ligne.
+ * Deux calages sont nécessaires pour que le surlignage épouse la ligne :
+ * verticalement, corps et interligne sont choisis pour que la zone peinte
+ * par la sélection fasse exactement la hauteur de la boîte « em » mesurée par
+ * PDFium ; horizontalement, le fragment est étiré pour atteindre la largeur
+ * mesurée, faute de quoi la sélection dériverait le long de la ligne.
  */
 function Segment({ segment, scale }: { segment: TextSegment; scale: number }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [stretch, setStretch] = useState(1);
 
   const targetWidth = segment.width * scale;
-  const fontSize = segment.height * scale;
+  const boxHeight = segment.height * scale;
+  // Corps tel que ascendante + descendante = hauteur de la boîte em, et
+  // interligne égal à cette même hauteur : la zone de sélection et la boîte
+  // de ligne coïncident alors toutes deux avec la boîte em.
+  const fontSize = boxHeight / fontRatio();
 
   useEffect(() => {
     const el = ref.current;
@@ -47,7 +79,7 @@ function Segment({ segment, scale }: { segment: TextSegment; scale: number }) {
         left: segment.x * scale,
         top: segment.y * scale,
         fontSize,
-        lineHeight: 1,
+        lineHeight: `${boxHeight}px`,
         whiteSpace: "pre",
         transformOrigin: "0 0",
         transform: `scaleX(${stretch})`,
@@ -121,7 +153,7 @@ export function TextLayer({
           style={{
             // Une famille connue rend `scrollWidth` prévisible ; le texte
             // étant transparent, la police n'a aucun effet visuel.
-            fontFamily: "sans-serif",
+            fontFamily: TEXT_FONT,
             pointerEvents: "none",
           }}
         >

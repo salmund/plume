@@ -570,7 +570,46 @@ fn segment_from_rect(rect: &PdfRect, page_height: f32, text: String) -> TextSegm
     }
 }
 
-/// Extrait le texte d'une page, découpé en fragments positionnés.
+/// Un fragment en cours d'assemblage, en coordonnées PDF.
+struct RunBuilder {
+    text: String,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    baseline: f32,
+    font_size: f32,
+    /// Un espace vient d'être ajouté : le prochain caractère peut être plus
+    /// loin sans que ce soit un changement de colonne.
+    pending_space: bool,
+}
+
+impl RunBuilder {
+    fn finish(self, page_height: f32) -> Option<TextSegment> {
+        if self.text.trim().is_empty() || self.right <= self.left {
+            return None;
+        }
+        // Les espaces de fin ne portent aucune géométrie : les garder
+        // fausserait l'étirement horizontal côté frontend.
+        let text = self.text.trim_end().to_string();
+        Some(TextSegment {
+            text,
+            x: self.left,
+            y: page_height - self.top,
+            width: self.right - self.left,
+            height: (self.top - self.bottom).max(1.0),
+        })
+    }
+}
+
+/// Extrait le texte d'une page, groupé en lignes positionnées.
+///
+/// Le découpage se fait caractère par caractère plutôt que par segments
+/// PDFium : d'une part on obtient la boîte « em » de chaque glyphe
+/// (`loose_bounds`) plutôt que la boîte d'encre, ce qui aligne le surlignage
+/// de sélection sur la ligne au lieu de le décaler vers le haut ; d'autre
+/// part les caractères contigus se recollent, sans les trous que laissent
+/// les segments à chaque changement de style.
 fn page_text(
     docs: &HashMap<u32, OpenDoc>,
     doc_id: u32,
@@ -585,19 +624,92 @@ fn page_text(
     let page_height = page.height().value;
     let text = page.text().map_err(|e| format!("Texte illisible : {e:?}"))?;
 
-    let mut segments = Vec::new();
-    for segment in text.segments().iter() {
-        let content = segment.text();
-        // Les fragments vides ou purement blancs n'apportent rien à la
-        // sélection et alourdiraient le DOM.
-        if content.trim().is_empty() {
+    let mut segments: Vec<TextSegment> = Vec::new();
+    let mut run: Option<RunBuilder> = None;
+
+    for char in text.chars().iter() {
+        let Some(glyph) = char.unicode_char() else {
+            continue;
+        };
+        // Les fins de ligne du flux ferment le fragment sans rien y ajouter.
+        if glyph == '\r' || glyph == '\n' {
+            if let Some(r) = run.take() {
+                segments.extend(r.finish(page_height));
+            }
             continue;
         }
-        let bounds = segment.bounds();
-        if bounds.width().value <= 0.0 || bounds.height().value <= 0.0 {
+        if glyph.is_control() {
             continue;
         }
-        segments.push(segment_from_rect(&bounds, page_height, content));
+
+        // Les espaces rejoignent le fragment sans peser sur sa géométrie :
+        // PDFium leur attribue parfois des boîtes fantaisistes, et s'y fier
+        // couperait chaque ligne à chaque mot.
+        if glyph.is_whitespace() {
+            if let Some(r) = run.as_mut() {
+                r.text.push(' ');
+                r.pending_space = true;
+            }
+            continue;
+        }
+
+        let Ok(bounds) = char.loose_bounds().or_else(|_| char.tight_bounds()) else {
+            continue;
+        };
+        let baseline = char.origin_y().map(|p| p.value).unwrap_or(bounds.bottom().value);
+        let font_size = char.scaled_font_size().value.abs().max(1.0);
+
+        let left = bounds.left().value;
+        let right = bounds.right().value;
+        let top = bounds.top().value;
+        let bottom = bounds.bottom().value;
+
+        let start_new = match &run {
+            None => true,
+            Some(r) => {
+                // Un espace justifie un écart plus large avant de conclure
+                // à un changement de colonne.
+                let gap_allowed = if r.pending_space {
+                    font_size * 2.5
+                } else {
+                    font_size * 0.6
+                };
+                // Changement de ligne, retour arrière, saut horizontal
+                // important ou rupture de corps : le fragment se termine.
+                (baseline - r.baseline).abs() > font_size * 0.3
+                    || left < r.right - font_size * 0.6
+                    || left > r.right + gap_allowed
+                    || (font_size - r.font_size).abs() > r.font_size * 0.25
+            }
+        };
+
+        if start_new {
+            if let Some(r) = run.take() {
+                segments.extend(r.finish(page_height));
+            }
+            run = Some(RunBuilder {
+                text: String::new(),
+                left,
+                right,
+                top,
+                bottom,
+                baseline,
+                font_size,
+                pending_space: false,
+            });
+        }
+
+        let r = run.as_mut().expect("fragment ouvert");
+        r.text.push(glyph);
+        r.left = r.left.min(left);
+        r.right = r.right.max(right);
+        r.top = r.top.max(top);
+        r.bottom = r.bottom.min(bottom);
+        r.pending_space = false;
+    }
+
+    if let Some(r) = run {
+        segments.extend(r.finish(page_height));
     }
     Ok(segments)
 }
@@ -1250,6 +1362,48 @@ mod tests {
         })
         .unwrap();
         assert!(rx.blocking_recv().unwrap().unwrap().is_empty());
+    }
+
+    /// Diagnostic : affiche les fragments de texte de la première page du PDF
+    /// pointé par PLUME_DIAG_PDF, avec leur géométrie.
+    #[test]
+    fn diagnostic_texte() {
+        let Ok(path) = std::env::var("PLUME_DIAG_PDF") else {
+            return;
+        };
+        let tx = test_engine();
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::Open {
+            path: path.clone(),
+            reply,
+        })
+        .unwrap();
+        let info = rx.blocking_recv().unwrap().expect("ouverture");
+        println!(
+            "Page 0 : {:.1} × {:.1} pt",
+            info.pages[0].width, info.pages[0].height
+        );
+
+        let (reply, rx) = oneshot::channel();
+        tx.send(PdfRequest::PageText {
+            doc_id: info.id,
+            page_index: 0,
+            reply,
+        })
+        .unwrap();
+        let segments = rx.blocking_recv().unwrap().expect("texte");
+        for segment in segments.iter().take(14) {
+            println!(
+                "  ({:6.1},{:6.1}) {:6.1}×{:5.1}  «{}»",
+                segment.x,
+                segment.y,
+                segment.width,
+                segment.height,
+                segment.text.chars().take(46).collect::<String>()
+            );
+        }
+        println!("{} fragment(s) sur la page 1", segments.len());
     }
 
     /// Diagnostic : affiche le sommaire du PDF pointé par PLUME_DIAG_PDF.

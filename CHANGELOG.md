@@ -23,6 +23,15 @@ versionnage [SemVer](https://semver.org/lang/fr/).
 - **Réglages d'images** — l'encadré de survol et l'infobulle se désactivent
   indépendamment ; le clic droit reste disponible dans tous les cas.
 
+### Corrigé
+
+- La sélection de texte se découpait à chaque espace (193 rectangles pour un
+  CV d'une page, au lieu de 55) et se décalait au-dessus de la ligne. Les
+  fragments sont désormais assemblés caractère par caractère à partir des
+  boîtes « em » de PDFium, les espaces ne pesant plus sur la géométrie ; le
+  corps et l'interligne du calque sont calculés à partir des métriques
+  mesurées de la police pour que le surlignage épouse exactement la ligne.
+
 ### Modifié
 
 - Détection d'images affinée : rognage à la surface visible de la page, seuil
