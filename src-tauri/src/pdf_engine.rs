@@ -113,23 +113,30 @@ pub struct PageImageInfo {
 }
 
 /// Une opération de structure sur les pages du document.
+///
+/// `rename_all` ne porte que sur les noms de variantes : les champs ont besoin
+/// de leur propre annotation pour accepter le camelCase venu du frontend.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PageOp {
     /// Quarts de tour horaires (négatif = antihoraire).
+    #[serde(rename_all = "camelCase")]
     Rotate {
         pages: Vec<u16>,
         quarter_turns: i32,
     },
+    #[serde(rename_all = "camelCase")]
     Delete {
         pages: Vec<u16>,
     },
     /// Déplace les pages données pour qu'elles commencent à `dest`.
+    #[serde(rename_all = "camelCase")]
     Move {
         pages: Vec<u16>,
         dest: u16,
     },
     /// Insère les pages d'autres PDF à la position donnée.
+    #[serde(rename_all = "camelCase")]
     Merge {
         paths: Vec<String>,
         at: u16,
@@ -1692,6 +1699,34 @@ mod tests {
         })
         .unwrap();
         assert!(rx.blocking_recv().unwrap().unwrap().is_empty());
+    }
+
+    /// Le frontend envoie du camelCase : chaque opération doit se désérialiser
+    /// telle qu'elle part de TypeScript, champs compris.
+    #[test]
+    fn operations_desserialisees_en_camel_case() {
+        let cases = [
+            r#"{"kind":"rotate","pages":[0,2],"quarterTurns":-1}"#,
+            r#"{"kind":"delete","pages":[1]}"#,
+            r#"{"kind":"move","pages":[3],"dest":0}"#,
+            r#"{"kind":"merge","paths":["a.pdf"],"at":2}"#,
+        ];
+        for json in cases {
+            let op: PageOp = serde_json::from_str(json)
+                .unwrap_or_else(|e| panic!("« {json} » refusé : {e}"));
+            // Les valeurs doivent traverser intactes.
+            match (json.contains("rotate"), op) {
+                (true, PageOp::Rotate {
+                    pages,
+                    quarter_turns,
+                }) => {
+                    assert_eq!(pages, vec![0, 2]);
+                    assert_eq!(quarter_turns, -1);
+                }
+                (true, _) => panic!("mauvaise variante pour rotate"),
+                _ => {}
+            }
+        }
     }
 
     /// Fusion, rotation, déplacement, suppression, extraction : chaque

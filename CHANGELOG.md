@@ -33,6 +33,15 @@ versionnage [SemVer](https://semver.org/lang/fr/).
 
 ### Corrigé
 
+- La rotation de pages échouait sur « missing field `quarter_turns` » :
+  l'annotation `rename_all` de serde ne porte que sur les noms de variantes,
+  pas sur leurs champs, qui restaient donc en snake_case face au camelCase du
+  frontend. Un test verrouille désormais ce contrat pour chaque opération.
+- Un document pouvait s'ouvrir en double au démarrage quand la session
+  restaurée et le fichier passé en argument désignaient le même chemin : la
+  liste servant à dédoublonner n'était rafraîchie qu'au rendu suivant.
+- Le remappage des annotations après une fusion supposait une seule page
+  ajoutée ; il se fonde maintenant sur la différence de pagination réelle.
 - La sélection de texte se découpait à chaque espace (193 rectangles pour un
   CV d'une page, au lieu de 55) et se décalait au-dessus de la ligne. Les
   fragments sont désormais assemblés caractère par caractère à partir des

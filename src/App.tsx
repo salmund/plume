@@ -307,7 +307,7 @@ export default function App() {
 
   /** Ce que devient chaque page après l'opération. */
   const mappingFor = useCallback(
-    (op: PageOp, pageCount: number): Map<number, number> => {
+    (op: PageOp, pageCount: number, newCount: number): Map<number, number> => {
       const mapping = new Map<number, number>();
       if (op.kind === "delete") {
         const removed = new Set(op.pages);
@@ -328,8 +328,11 @@ export default function App() {
         ];
         order.forEach((from, to) => mapping.set(from, to));
       } else if (op.kind === "merge") {
+        // Une fusion peut insérer plusieurs pages : le décalage se déduit de
+        // la différence de pagination, pas du nombre de fichiers.
+        const added = Math.max(0, newCount - pageCount);
         for (let i = 0; i < pageCount; i++) {
-          mapping.set(i, i < op.at ? i : i + 1);
+          mapping.set(i, i < op.at ? i : i + added);
         }
       } else {
         // Rotation : la pagination ne bouge pas.
@@ -347,9 +350,7 @@ export default function App() {
       setBusyId(docId);
       try {
         const info = await editPages(docId, op);
-        // Le remappage se fait sur la pagination d'avant l'opération ; pour
-        // une fusion, seul le décalage compte, pas le nombre exact ajouté.
-        remapPending(docId, mappingFor(op, doc.pageCount));
+        remapPending(docId, mappingFor(op, doc.pageCount, info.pageCount));
         setDocs((prev) => prev.map((d) => (d.id === docId ? info : d)));
         structuralRef.current.add(docId);
         setRevs((prev) => ({ ...prev, [docId]: (prev[docId] ?? 0) + 1 }));
@@ -496,6 +497,10 @@ export default function App() {
         openingRef.current.add(path);
         try {
           const info = await openDocument(path);
+          // La ref est mise à jour tout de suite : sans cela, deux ouvertures
+          // dans le même tick (session restaurée puis fichier en argument) ne
+          // se verraient pas et le document s'ouvrirait en double.
+          docsRef.current = [...docsRef.current, info];
           setDocs((prev) => [...prev, info]);
           setActiveId(info.id);
           pushRecent({ path: info.path, title: info.title });
